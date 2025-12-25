@@ -1,4 +1,5 @@
 import json
+import time
 from pathlib import Path
 
 BASE = Path(__file__).resolve().parent.parent
@@ -33,8 +34,9 @@ class Logger:
 def log_event(message: str):
     try:
         _ensure_dir(EVENT_LOG)
+        ts = time.time()
         with open(EVENT_LOG, "a", encoding="utf-8") as f:
-            f.write(message + "\n")
+            f.write(f"{ts} | {message}\n")
     except Exception:
         pass
 
