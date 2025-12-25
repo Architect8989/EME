@@ -1,8 +1,13 @@
 import json
 from pathlib import Path
 
-LOG_DIR = Path("logs")
+BASE = Path(__file__).resolve().parent.parent
+LOG_DIR = BASE / "logs"
+
 EXPERIMENT_LOG = LOG_DIR / "experiments.jsonl"
+CRASH_LOG = LOG_DIR / "crashes.log"
+EVENT_LOG = LOG_DIR / "events.log"
+
 
 def _ensure_dir(path: Path):
     try:
@@ -25,9 +30,17 @@ class Logger:
             pass
 
 
+def log_event(message: str):
+    try:
+        _ensure_dir(EVENT_LOG)
+        with open(EVENT_LOG, "a", encoding="utf-8") as f:
+            f.write(message + "\n")
+    except Exception:
+        pass
+
+
 def log_crash(message: str):
     try:
-        CRASH_LOG = LOG_DIR / "crashes.log"
         _ensure_dir(CRASH_LOG)
         with open(CRASH_LOG, "a", encoding="utf-8") as f:
             f.write(message + "\n")
