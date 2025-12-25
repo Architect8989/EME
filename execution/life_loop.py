@@ -4,6 +4,9 @@ import hashlib
 from core.logger import Logger, log_crash, log_event
 from perception.screenshot import capture_screen
 
+from core.delta import Delta
+from perception.diff import compute_delta
+
 
 class LifeLoop:
     """
@@ -46,6 +49,10 @@ class LifeLoop:
         # ---- PERCEPTION: AFTER ----
         post_snap = capture_screen(experiment_id)
 
+        # ---- DELTA: WHAT CHANGED ----
+        delta_data = compute_delta(pre_snap.path, post_snap.path)
+        delta = Delta(delta_data)
+
         record = {
             "experiment_id": experiment_id,
             "action_id": getattr(action, "id", "unknown"),
@@ -59,15 +66,17 @@ class LifeLoop:
                 "path": str(pre_snap.path),
                 "timestamp": pre_snap.timestamp,
                 "width": pre_snap.width,
-                "height": pre_snap.height
+                "height": pre_snap.height,
             },
 
             "post_snapshot": {
                 "path": str(post_snap.path),
                 "timestamp": post_snap.timestamp,
                 "width": post_snap.width,
-                "height": post_snap.height
+                "height": post_snap.height,
             },
+
+            "delta": delta.to_dict(),
         }
 
         try:
