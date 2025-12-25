@@ -1,10 +1,10 @@
 import time
-from runners import run_once
+from runners.run_once import run
 
 
 def run_batch(n=300, delay=0.1):
     for _ in range(n):
-        run_once.run()
+        run()
         time.sleep(delay)
 
 
