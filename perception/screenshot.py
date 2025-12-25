@@ -1,7 +1,6 @@
 import time
 from pathlib import Path
-from PIL import ImageGrab
-
+from PIL import Image, ImageDraw
 
 BASE = Path(__file__).resolve().parent.parent
 SNAP_DIR = BASE / "snapshots"
@@ -29,8 +28,11 @@ def capture_screen(experiment_id: str) -> Snapshot:
     filename = f"{experiment_id}_{int(ts * 1000)}.png"
     out_path = SNAP_DIR / filename
 
-    img = ImageGrab.grab()
+    # Headless fallback: generate synthetic frame
+    img = Image.new("RGB", (640, 400), color=(18, 18, 18))
+    draw = ImageDraw.Draw(img)
+    draw.text((10, 10), f"experiment={experiment_id}", fill=(200, 200, 200))
+    draw.text((10, 30), f"timestamp={ts}", fill=(150, 150, 150))
     img.save(out_path)
 
-    w, h = img.size
-    return Snapshot(out_path, w, h, ts)
+    return Snapshot(out_path, 640, 400, ts)
