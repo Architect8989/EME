@@ -1,8 +1,16 @@
 import time
+import hashlib
+
 from core.logger import Logger, log_crash, log_event
+from perception.screenshot import capture_screen
 
 
 class LifeLoop:
+    """
+    Infrastructure gatekeeper.
+    Executes one action. Measures reality. Refuses to lie.
+    """
+
     def __init__(self, action_executor, logger: Logger):
         if not hasattr(action_executor, "execute"):
             raise TypeError("action_executor must implement execute()")
@@ -18,6 +26,9 @@ class LifeLoop:
 
         experiment_id = self._generate_experiment_id()
 
+        # ---- PERCEPTION: BEFORE ----
+        pre_snap = capture_screen(experiment_id)
+
         start = time.perf_counter()
         result = None
         err = None
@@ -32,6 +43,9 @@ class LifeLoop:
 
         end = time.perf_counter()
 
+        # ---- PERCEPTION: AFTER ----
+        post_snap = capture_screen(experiment_id)
+
         record = {
             "experiment_id": experiment_id,
             "action_id": getattr(action, "id", "unknown"),
@@ -40,6 +54,20 @@ class LifeLoop:
             "duration": end - start,
             "raw_result": repr(result),
             "raw_error": err,
+
+            "pre_snapshot": {
+                "path": str(pre_snap.path),
+                "timestamp": pre_snap.timestamp,
+                "width": pre_snap.width,
+                "height": pre_snap.height
+            },
+
+            "post_snapshot": {
+                "path": str(post_snap.path),
+                "timestamp": post_snap.timestamp,
+                "width": post_snap.width,
+                "height": post_snap.height
+            },
         }
 
         try:
@@ -53,6 +81,5 @@ class LifeLoop:
         return record
 
     def _generate_experiment_id(self):
-        import hashlib
         t = time.perf_counter_ns()
         return hashlib.sha256(str(t).encode()).hexdigest()[:16]
