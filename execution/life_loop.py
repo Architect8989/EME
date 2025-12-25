@@ -1,11 +1,12 @@
 import time
-from core.logger import Logger, log_crash
+from core.logger import Logger, log_crash, log_event
 
 
 class LifeLoop:
     def __init__(self, action_executor, logger: Logger):
         if not hasattr(action_executor, "execute"):
             raise TypeError("action_executor must implement execute()")
+
         if not hasattr(logger, "record"):
             raise TypeError("logger must implement record()")
 
@@ -13,6 +14,8 @@ class LifeLoop:
         self._logger = logger
 
     def run_experiment(self, action):
+        log_event("experiment.begin")
+
         experiment_id = self._generate_experiment_id()
 
         start = time.perf_counter()
@@ -20,9 +23,12 @@ class LifeLoop:
         err = None
 
         try:
+            log_event("experiment.dispatch")
             result = self._action_executor.execute(action)
+
         except Exception as e:
             err = str(e)
+            log_event("experiment.failure")
 
         end = time.perf_counter()
 
@@ -38,10 +44,12 @@ class LifeLoop:
 
         try:
             self._logger.record(record)
+            log_event("experiment.recorded")
         except Exception as e:
             log_crash(f"LOGGING FAILED: {e}")
             raise
 
+        log_event("experiment.complete")
         return record
 
     def _generate_experiment_id(self):
