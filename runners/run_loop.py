@@ -6,6 +6,6 @@ from actions.probe_action import ProbeAction
 
 loop = LifeLoop(ActionExecutor(), Logger())
 
-while True:
+for _ in range(10000):
     loop.run_experiment(ProbeAction())
-    time.sleep(2)
+    time.sleep(0.2)
