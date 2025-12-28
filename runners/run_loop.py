@@ -1,3 +1,5 @@
+import os
+os.environ["DISPLAY"] = ":99"
 import time
 from execution.life_loop import LifeLoop
 from execution.action_executor import ActionExecutor
