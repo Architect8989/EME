@@ -2,7 +2,8 @@
 Run exactly one experiment.
 Used by CLI and batch runner.
 """
-
+import os
+os.environ["DISPLAY"] = ":99"
 from execution.life_loop import LifeLoop
 from execution.action_executor import ActionExecutor
 from core.logger import Logger
