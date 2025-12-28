@@ -1,3 +1,6 @@
+import os
+os.environ["DISPLAY"] = ":99"
+
 from core.os_detection import detect_os
 
 
