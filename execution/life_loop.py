@@ -173,6 +173,14 @@ class LifeLoop:
         log_event("experiment.complete")
         return record
 
+    def run(self, action, iterations: int = 20):
+        """
+        Finite debug loop.
+        Runs a fixed number of experiments, then stops.
+        """
+        for _ in range(iterations):
+            self.run_experiment(action)
+
     def _generate_experiment_id(self):
         t = time.perf_counter_ns()
         return hashlib.sha256(str(t).encode()).hexdigest()[:16]
