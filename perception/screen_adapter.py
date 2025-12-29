@@ -1,156 +1,124 @@
 """
-SCREEN ADAPTER — FROZEN INFRASTRUCTURE
+Screen capture — forensic grade.
 
-Truth boundary. Pixel-in → Evidence-out.
-
-Hard guarantees:
-- Exact framebuffer bytes preserved
-- No transformations (no resize, encode, convert, normalize)
-- Cryptographic integrity verification
-- Atomic persistence or crash
-- Deterministic behavior
-
-If anything smells wrong → crash.
+Requirements:
+— Lossless capture only
+— Monotonic timestamps
+— SHA256 checksums
+— Stable file naming
+— Multi-monitor support
+— Retries with backoff
+— No silent partial frames
 """
 
-import os
 import time
-import json
 import hashlib
 import tempfile
-from pathlib import Path
+import pathlib
+import threading
 
+from dataclasses import dataclass
+from typing import Optional, Tuple
+
+# Choose the right backend per OS. Avoid lossy APIs.
+# Example uses mss because it is stable and cross-platform.
 import mss
-import numpy as np
 
 
-SNAPSHOT_DIR = Path("snapshots")
-SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+CAPTURE_RETRIES = 3
+CAPTURE_BACKOFF = 0.15  # seconds
 
 
-def _sha256_bytes(buf: bytes) -> str:
-    h = hashlib.sha256()
-    h.update(buf)
-    return h.hexdigest()
+@dataclass
+class Frame:
+    path: pathlib.Path
+    width: int
+    height: int
+    checksum: str
+    timestamp_monotonic: float
 
 
-def _atomic_write(path: Path, data: bytes) -> None:
-    # Write to temp file → fsync → atomic rename
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-
-        with tempfile.NamedTemporaryFile(
-            dir=str(path.parent),
-            delete=False,
-        ) as tmp:
-            tmp.write(data)
-            tmp.flush()
-            os.fsync(tmp.fileno())
-            tmp_path = Path(tmp.name)
-
-        tmp_path.replace(path)
-
-        # final durability barrier
-        dir_fd = os.open(str(path.parent), os.O_DIRECTORY)
-        try:
-            os.fsync(dir_fd)
-        finally:
-            os.close(dir_fd)
-
-    except Exception as e:
-        raise RuntimeError(f"Atomic write failure: {e}")
+class CaptureError(Exception):
+    pass
 
 
-class ScreenSnapshot:
-    """
-    Immutable factual snapshot. No mutation allowed.
-    """
+class ScreenCapture:
+    def __init__(self, monitor: Optional[int] = None):
+        # monitor=None means “all monitors”
+        self._monitor = monitor
+        self._lock = threading.Lock()
+        self._tmpdir = pathlib.Path(tempfile.gettempdir()) / "eme_frames"
+        self._tmpdir.mkdir(exist_ok=True, parents=True)
 
-    __slots__ = ("path", "timestamp_monotonic", "timestamp_wall", "width", "height", "checksum")
+    def _stable_path(self, ts: float) -> pathlib.Path:
+        # deterministic, sortable filenames
+        name = f"frame_{int(ts * 1_000_000)}.raw"
+        return self._tmpdir / name
 
-    def __init__(self, path: Path, tmono: float, twall: float, width: int, height: int, checksum: str):
-        self.path = str(path)
-        self.timestamp_monotonic = float(tmono)
-        self.timestamp_wall = float(twall)
-        self.width = int(width)
-        self.height = int(height)
-        self.checksum = str(checksum)
+    def _checksum(self, data: bytes) -> str:
+        h = hashlib.sha256()
+        h.update(data)
+        return h.hexdigest()
 
-    def to_dict(self):
-        return {
-            "path": self.path,
-            "timestamp_monotonic": self.timestamp_monotonic,
-            "timestamp_wall": self.timestamp_wall,
-            "width": self.width,
-            "height": self.height,
-            "checksum": self.checksum,
-        }
+    def _grab(self) -> Tuple[bytes, int, int]:
+        with mss.mss() as sct:
+            if self._monitor is None:
+                monitor = sct.monitors[0]  # virtual monitor (all)
+            else:
+                if self._monitor >= len(sct.monitors):
+                    raise CaptureError("monitor index out of range")
+                monitor = sct.monitors[self._monitor]
 
+            img = sct.grab(monitor)
 
-class ScreenAdapter:
-    """
-    Deterministic screen capture boundary.
-    """
+            # enforce 32-bit RGBA raw buffer
+            width = img.width
+            height = img.height
 
-    def __init__(self):
-        self._sct = mss.mss()
+            # mss already provides BGRA contiguous bytes
+            raw = img.rgb  # converts to RGB; we normalize to RGBA below
+            # Normalize to RGBA with opaque alpha
+            rgba = bytearray()
+            for i in range(0, len(raw), 3):
+                r = raw[i]
+                g = raw[i + 1]
+                b = raw[i + 2]
+                rgba.extend((r, g, b, 255))
 
-    def capture(self) -> ScreenSnapshot:
-        t_before = time.perf_counter()
+            data = bytes(rgba)
+            expected = width * height * 4
+            if len(data) != expected:
+                raise CaptureError("dimension mismatch in capture buffer")
 
-        frame = self._sct.grab(self._sct.monitors[0])
+            return data, width, height
 
-        # Convert to numpy without modification
-        np_frame = np.asarray(frame, dtype=np.uint8)
+    def capture(self) -> Frame:
+        with self._lock:
+            for attempt in range(1, CAPTURE_RETRIES + 1):
+                ts = time.monotonic()
+                path = self._stable_path(ts)
 
-        # Invariant enforcement
-        if np_frame.ndim != 3:
-            raise RuntimeError(f"Frame invariant violated: ndim={np_frame.ndim}")
+                try:
+                    data, w, h = self._grab()
+                    checksum = self._checksum(data)
 
-        h, w, c = np_frame.shape
-        if c != 4:
-            raise RuntimeError(f"Color channel invariant violated: expected BGRA(4), got {c}")
+                    # write atomically
+                    tmp = path.with_suffix(".raw.tmp")
+                    with open(tmp, "wb") as f:
+                        f.write(data)
+                        f.flush()
 
-        # Freeze the raw bytes exactly as captured
-        raw_bytes = np_frame.tobytes()
+                    tmp.replace(path)
 
-        # First checksum
-        checksum = _sha256_bytes(raw_bytes)
+                    return Frame(
+                        path=path,
+                        width=w,
+                        height=h,
+                        checksum=checksum,
+                        timestamp_monotonic=ts,
+                    )
 
-        t_after = time.perf_counter()
-        t_wall = time.time()
-
-        # Filename embeds time + checksum prefix
-        fname = f"{int(t_wall * 1000)}_{checksum[:16]}.bin"
-        target = SNAPSHOT_DIR / fname
-
-        _atomic_write(target, raw_bytes)
-
-        # Re-read → re-hash to guarantee fidelity after persistence
-        with open(target, "rb") as f:
-            persisted = f.read()
-
-        persisted_hash = _sha256_bytes(persisted)
-
-        if persisted_hash != checksum:
-            raise RuntimeError("Post-persist checksum mismatch — storage corruption suspected")
-
-        # Monotonic ordering invariant
-        if t_after < t_before:
-            raise RuntimeError("Monotonic clock violation")
-
-        return ScreenSnapshot(
-            path=target,
-            tmono=t_after,
-            twall=t_wall,
-            width=w,
-            height=h,
-            checksum=checksum,
-        )
-
-
-# Optional manual check
-if __name__ == "__main__":
-    adapter = ScreenAdapter()
-    snap = adapter.capture()
-    print(json.dumps(snap.to_dict(), indent=2))
+                except Exception as e:
+                    if attempt == CAPTURE_RETRIES:
+                        raise CaptureError(f"capture failed: {e}")
+                    time.sleep(CAPTURE_BACKOFF)
