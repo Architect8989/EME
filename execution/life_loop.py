@@ -1,15 +1,13 @@
 """
-Life Loop — single-step, deterministic, fail-fast.
+Life Loop — deterministic, single-step.
+Observe → act → verify → log → stop.
 """
 
 import time
-import signal
 import threading
-from dataclasses import dataclass
-
 import numpy as np
 
-from core.logger import log_event, log_crash, Logger
+from core.logger import Logger, log_event, log_crash
 from perception.screen_adapter import ScreenAdapter
 from core.delta import Delta
 from evaluation.causality import evaluate_causality
@@ -19,14 +17,14 @@ class Timeout(Exception):
     pass
 
 
-def run_with_timeout(fn, timeout_s):
-    result = {"value": None, "error": None}
+def run_with_timeout(fn, timeout_s: float):
+    container = {"value": None, "error": None}
 
     def target():
         try:
-            result["value"] = fn()
+            container["value"] = fn()
         except Exception as e:
-            result["error"] = e
+            container["error"] = e
 
     t = threading.Thread(target=target, daemon=True)
     t.start()
@@ -35,10 +33,10 @@ def run_with_timeout(fn, timeout_s):
     if t.is_alive():
         raise Timeout(f"operation exceeded {timeout_s}s")
 
-    if result["error"]:
-        raise result["error"]
+    if container["error"]:
+        raise container["error"]
 
-    return result["value"]
+    return container["value"]
 
 
 def _load_raw_frame(path: str, width: int, height: int):
@@ -47,7 +45,7 @@ def _load_raw_frame(path: str, width: int, height: int):
 
     expected = width * height * 4
     if len(raw) != expected:
-        raise RuntimeError(f"Frame size mismatch {len(raw)} != {expected}")
+        raise RuntimeError(f"frame size mismatch {len(raw)} != {expected}")
 
     arr = np.frombuffer(raw, dtype=np.uint8)
     return arr.reshape((height, width, 4))
@@ -58,14 +56,15 @@ def _compute_delta(pre, post):
     post_arr = _load_raw_frame(post.path, post.width, post.height)
 
     if pre_arr.shape != post_arr.shape:
-        raise RuntimeError("Snapshot dimension mismatch")
+        raise RuntimeError("snapshot dimension mismatch")
 
     diff = np.any(pre_arr != post_arr, axis=2)
+
     pixels_total = diff.size
     pixels_changed = int(np.count_nonzero(diff))
 
     if pixels_total == 0:
-        raise RuntimeError("Zero-sized frame")
+        raise RuntimeError("zero-sized frame")
 
     if pixels_changed:
         ys, xs = np.where(diff)
@@ -74,7 +73,6 @@ def _compute_delta(pre, post):
         bbox = None
 
     return {
-        "error": None,
         "pixels_total": int(pixels_total),
         "pixels_changed": pixels_changed,
         "percent_changed": float(pixels_changed / pixels_total),
@@ -83,17 +81,13 @@ def _compute_delta(pre, post):
 
 
 class LifeLoop:
-    """
-    Observe → act once → verify → log.
-    No guesses. No retries. No loops.
-    """
-
     SCREEN_TIMEOUT = 5
     ACTION_TIMEOUT = 3
+    LOG_TIMEOUT = 3
 
     def __init__(self, action_executor, logger: Logger):
         self._screen = ScreenAdapter()
-        self._action_executor = action_executor
+        self._executor = action_executor
         self._logger = logger
 
     def run_experiment(self, action):
@@ -107,14 +101,13 @@ class LifeLoop:
         result = None
 
         try:
-            log_event("experiment.dispatch")
             result = run_with_timeout(
-                lambda: self._action_executor.execute(action),
+                lambda: self._executor.execute(action),
                 self.ACTION_TIMEOUT,
             )
         except Exception as e:
             err = str(e)
-            log_event("experiment.failure")
+            log_event("experiment.failure", {"error": err})
 
         post = run_with_timeout(self._screen.capture, self.SCREEN_TIMEOUT)
 
@@ -129,10 +122,10 @@ class LifeLoop:
         )
 
         record = {
-            "start": start,
+            "type": "experiment",
+            "error": err,
+            "result": repr(result),
             "duration": time.perf_counter() - start,
-            "raw_result": repr(result),
-            "raw_error": err,
             "pre": {
                 "path": str(pre.path),
                 "checksum": pre.checksum,
@@ -148,10 +141,10 @@ class LifeLoop:
         }
 
         try:
-            self._logger.record(record)
+            run_with_timeout(lambda: self._logger.record(record), self.LOG_TIMEOUT)
             log_event("experiment.complete")
         except Exception as e:
-            log_crash(f"LOGGING FAILED: {e}")
+            log_crash("logging failed", {"error": str(e)})
             raise
 
         return record
