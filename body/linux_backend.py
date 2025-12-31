@@ -1,53 +1,125 @@
-# body/linux_backend.py
+import time
+import subprocess
+from typing import Tuple
+
+import mss
+import numpy as np
 
 from execution.backend_contract import BackendBase, Result, ErrorCode
-import pyautogui
-import hashlib
-import io
-import time
+
+
+MAX_PX_PER_SEC = 100
+MOVE_STEP_PX = 1
+CAPTURE_RETRY_LIMIT = 2
 
 
 class LinuxBackend(BackendBase):
-    def _impl_screenshot(self) -> dict:
-        img = pyautogui.screenshot()
+    def __init__(self):
+        self._mss = mss.mss()
+        self._screen = self._primary_monitor()
 
-        buf = io.BytesIO()
-        img.save(buf, format="PNG")
-        raw = buf.getvalue()
+    def _primary_monitor(self):
+        monitors = self._mss.monitors
+        if not monitors or len(monitors) < 2:
+            raise RuntimeError("No primary monitor")
+        return monitors[1]
 
-        sha = hashlib.sha256(raw).hexdigest()
+    def _run(self, cmd):
+        p = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        if p.returncode != 0:
+            raise RuntimeError(p.stderr.strip())
+        return p.stdout.strip()
 
-        # storage_key is only an identifier — caller persists it elsewhere
-        storage_key = f"frame-{int(time.time_ns())}-{sha}"
+    def _capture(self) -> np.ndarray:
+        for _ in range(CAPTURE_RETRY_LIMIT):
+            try:
+                frame = np.array(self._mss.grab(self._screen))
+                if frame.size == 0:
+                    raise RuntimeError("Empty frame")
+                return frame
+            except Exception:
+                time.sleep(0.05)
+        raise RuntimeError("Screen capture unstable")
 
-        return {
-            "width": img.width,
-            "height": img.height,
-            "format": "png",
-            "sha256": sha,
-            "storage_key": storage_key,
-        }
+    def _cursor(self) -> Tuple[int, int]:
+        out = self._run(["xdotool", "getmouselocation", "--shell"])
+        vals = {}
+        for line in out.splitlines():
+            if "=" in line:
+                k, v = line.split("=", 1)
+                vals[k] = int(v)
+        if "X" not in vals or "Y" not in vals:
+            raise RuntimeError("Cursor read failed")
+        return vals["X"], vals["Y"]
 
-    def _impl_move_mouse(self, x: int, y: int) -> dict:
-        screen_w, screen_h = pyautogui.size()
+    def _clamp(self, x: int, y: int) -> Tuple[int, int]:
+        w = self._screen["width"] - 1
+        h = self._screen["height"] - 1
+        return max(0, min(x, w)), max(0, min(y, h))
 
-        clamped_x = max(0, min(x, screen_w - 1))
-        clamped_y = max(0, min(y, screen_h - 1))
+    def _impl_screenshot(self) -> Result:
+        frame = self._capture()
+        return Result.ok({
+            "width": frame.shape[1],
+            "height": frame.shape[0],
+            "format": "raw",
+            "mean_delta": 0.0,
+        })
 
-        pyautogui.moveTo(clamped_x, clamped_y, duration=0)
+    def _impl_move_mouse(self, x: int, y: int) -> Result:
+        cx, cy = self._cursor()
+        tx, ty = self._clamp(x, y)
 
-        pos_x, pos_y = pyautogui.position()
+        dx = tx - cx
+        dy = ty - cy
 
-        return {
-            "requested": (x, y),
-            "final": (pos_x, pos_y),
-            "clamped": (clamped_x != x) or (clamped_y != y),
-        }
+        if abs(dx) > MOVE_STEP_PX or abs(dy) > MOVE_STEP_PX:
+            return Result.err(ErrorCode.UNSAFE_OPERATION)
 
-    def _impl_click(self, button: str, count: int) -> dict:
-        pyautogui.click(button=button, clicks=count, interval=0)
-        return {"button": button, "count": count}
+        before = self._capture()
+        self._run(["xdotool", "mousemove", str(tx), str(ty)])
+        time.sleep(1.0 / MAX_PX_PER_SEC)
+        after = self._capture()
 
-    def _impl_type_text(self, text: str) -> dict:
-        pyautogui.typewrite(text, interval=0)
-        return {"length": len(text)}
+        delta = float(np.mean(np.abs(before.astype(np.int16) - after.astype(np.int16))))
+
+        if delta <= 0:
+            return Result.err(ErrorCode.NO_EFFECT)
+
+        return Result.ok({
+            "from": (cx, cy),
+            "to": (tx, ty),
+            "delta": delta,
+        })
+
+    def _impl_click(self, button: str, count: int) -> Result:
+        return Result.err(ErrorCode.UNAVAILABLE)
+
+    def _impl_type_text(self, text: str) -> Result:
+        return Result.err(ErrorCode.UNAVAILABLE)
+
+    def self_test(self):
+        before = self._capture()
+        x, y = self._cursor()
+
+        dx = 1 if x + 1 < self._screen["width"] else -1
+        self._run(["xdotool", "mousemove", str(x + dx), str(y)])
+        time.sleep(1.0 / MAX_PX_PER_SEC)
+
+        after = self._capture()
+        nx, ny = self._cursor()
+
+        if abs(nx - x) != 1:
+            raise RuntimeError("Mouse movement verification failed")
+
+        delta = float(np.mean(np.abs(before.astype(np.int16) - after.astype(np.int16))))
+        if delta <= 0:
+            raise RuntimeError("No visual delta detected")
+
+        self._run(["xdotool", "mousemove", str(x), str(y)])
+        return True
