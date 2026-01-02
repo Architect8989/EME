@@ -4,6 +4,8 @@ import signal
 
 from core.mode_gate import ModeGate, Mode
 from core.environment_contract import EnvironmentContract
+from core.poison import Poison
+from core.system_state import SystemState
 
 
 def hard_abort(reason: str):
@@ -13,6 +15,7 @@ def hard_abort(reason: str):
 
 
 def bootstrap():
+    Poison.assert_clean()
     ModeGate.disarm()
 
     session_type = os.environ.get("XDG_SESSION_TYPE", "").lower()
@@ -33,12 +36,14 @@ def bootstrap():
             ModeGate.kill("Manual kill signal received")
         except Exception:
             pass
-        sys.exit(0)
+        sys.exit(1)
 
     signal.signal(signal.SIGINT, _kill)
     signal.signal(signal.SIGTERM, _kill)
 
     ModeGate.arm(Mode.PROBE)
+
+    SystemState.mark_initialized()
 
     return {
         "mode": ModeGate.current_mode().value,
