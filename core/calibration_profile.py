@@ -8,17 +8,13 @@ from typing import Tuple
 import numpy as np
 
 from core.mode_gate import ModeGate, Mode
-from execution.backend_contract import BackendBase, Result, ErrorCode
+from core.poison import Poison
+from execution.backend_contract import BackendBase
 
 
 CALIBRATION_PATH = Path("calibration_profile.json")
-MAX_PROBE_MOVE_PX = 1
 LATENCY_SAMPLES = 5
 EXPIRY_SECONDS = 60 * 60 * 24
-
-
-class CalibrationError(Exception):
-    pass
 
 
 @dataclass(frozen=True)
@@ -38,34 +34,53 @@ class CalibrationProfile:
 
 class CalibrationManager:
     def __init__(self, backend: BackendBase, environment_hash: str):
+        Poison.assert_clean()
         ModeGate.assert_allowed(require=Mode.CALIBRATE)
         self._backend = backend
         self._env_hash = environment_hash
 
+    def _discover_bounds(self) -> Tuple[int, int, int, int]:
+        Poison.assert_clean()
+        res = self._backend.screenshot()
+        if not res.ok:
+            Poison.trigger("Screenshot failed during calibration")
+
+        if "width" not in res.data or "height" not in res.data:
+            Poison.trigger("Calibration screenshot missing resolution")
+
+        w = res.data["width"]
+        h = res.data["height"]
+
+        if w <= 0 or h <= 0:
+            Poison.trigger("Invalid resolution during calibration")
+
+        return 0, 0, w - 1, h - 1
+
     def _measure_latency(self) -> Tuple[float, float]:
+        Poison.assert_clean()
         samples = []
 
         for _ in range(LATENCY_SAMPLES):
             start = time.time()
             res = self._backend.move_mouse_relative(0, 0)
             if not res.ok:
-                raise CalibrationError("Latency probe failed")
+                Poison.trigger("Latency probe failed")
             samples.append((time.time() - start) * 1000.0)
-            time.sleep(0.05)
 
         arr = np.array(samples)
-        return float(np.percentile(arr, 50)), float(np.percentile(arr, 95))
+        if arr.size == 0:
+            Poison.trigger("No latency samples collected")
 
-    def _discover_bounds(self) -> Tuple[int, int, int, int]:
-        res = self._backend.screenshot()
-        if not res.ok:
-            raise CalibrationError("Screenshot failed during bounds discovery")
+        p50 = float(np.percentile(arr, 50))
+        p95 = float(np.percentile(arr, 95))
 
-        w = res.data["width"]
-        h = res.data["height"]
-        return 0, 0, w - 1, h - 1
+        if p50 <= 0 or p95 <= 0 or p95 < p50:
+            Poison.trigger("Invalid latency distribution")
+
+        return p50, p95
 
     def run(self) -> CalibrationProfile:
+        Poison.assert_clean()
         ModeGate.assert_allowed(require=Mode.CALIBRATE)
 
         bounds = self._discover_bounds()
@@ -87,6 +102,7 @@ class CalibrationManager:
         return profile
 
     def _persist(self, profile: CalibrationProfile):
+        Poison.assert_clean()
         raw = json.dumps(asdict(profile), sort_keys=True).encode()
         digest = hashlib.sha256(raw).hexdigest()
 
@@ -99,20 +115,26 @@ class CalibrationManager:
 
 
 def load_calibration(environment_hash: str) -> CalibrationProfile:
+    Poison.assert_clean()
+
     if not CALIBRATION_PATH.exists():
-        raise CalibrationError("Calibration profile missing")
+        Poison.trigger("Calibration profile missing")
 
     payload = json.loads(CALIBRATION_PATH.read_text())
+
+    if "profile" not in payload or "sha256" not in payload:
+        Poison.trigger("Malformed calibration profile")
+
     profile = CalibrationProfile(**payload["profile"])
 
     raw = json.dumps(payload["profile"], sort_keys=True).encode()
     if hashlib.sha256(raw).hexdigest() != payload["sha256"]:
-        raise CalibrationError("Calibration profile tampered")
+        Poison.trigger("Calibration profile tampered")
 
     if profile.fingerprint_hash != environment_hash:
-        raise CalibrationError("Calibration does not match environment")
+        Poison.trigger("Calibration environment mismatch")
 
     if profile.is_expired():
-        raise CalibrationError("Calibration expired")
+        Poison.trigger("Calibration expired")
 
     return profile
