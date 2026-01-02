@@ -1,11 +1,15 @@
-import time
-from runners.run_once import run
+from core.system_state import SystemState
 
 
-def run_batch(n=300, delay=0.1):
-    for _ in range(n):
-        run()
-        time.sleep(delay)
+class RunnerDisabledError(RuntimeError):
+    pass
+
+
+def run_batch(*args, **kwargs):
+    SystemState.assert_initialized()
+    raise RunnerDisabledError(
+        "run_batch is disabled. Use bootstrap + executor only."
+    )
 
 
 if __name__ == "__main__":
