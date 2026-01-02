@@ -2,57 +2,51 @@ import os
 import sys
 import signal
 
-from core.os_detection import detect_os
-from body.linux_backend import LinuxBackend
-from core.safety_guard import SafetyGuard
+from core.mode_gate import ModeGate, Mode
+from core.environment_contract import EnvironmentContract
 
-MODE = "OBSERVE_ONLY"   # newborn lock, do not change
 
 def hard_abort(reason: str):
-    print(f"[BOOTSTRAP ABORT] {reason}", file=sys.stderr)
+    sys.stderr.write(f"[BOOTSTRAP ABORT] {reason}\n")
+    sys.stderr.flush()
     sys.exit(1)
 
-def bootstrap():
-    # 1. OS detection
-    facts = detect_os()
 
-    # 2. Enforce X11
+def bootstrap():
+    ModeGate.disarm()
+
     session_type = os.environ.get("XDG_SESSION_TYPE", "").lower()
     if session_type != "x11":
         hard_abort("Wayland detected. X11 required.")
 
     display = os.environ.get("DISPLAY")
     if not display:
-        hard_abort("DISPLAY not set. Cannot attach to X11 session.")
+        hard_abort("DISPLAY not set.")
 
-    # 3. Initialize backend
-    backend = LinuxBackend()
-
-    # 4. Backend self-test (MANDATORY)
     try:
-        backend.self_test()
+        env_fp = EnvironmentContract.verify()
     except Exception as e:
-        hard_abort(f"Backend self-test failed: {e}")
+        hard_abort(str(e))
 
-    # 5. Safety guard (authoritative)
-    guard = SafetyGuard()
-    guard.lock_observe_only()
-
-    # 6. Kill switch (SIGINT / SIGTERM)
     def _kill(_sig, _frame):
-        guard.emergency_stop("Manual kill signal received")
+        try:
+            ModeGate.kill("Manual kill signal received")
+        except Exception:
+            pass
         sys.exit(0)
 
     signal.signal(signal.SIGINT, _kill)
     signal.signal(signal.SIGTERM, _kill)
 
+    ModeGate.arm(Mode.PROBE)
+
     return {
-        "facts": facts,
-        "mode": MODE,
+        "mode": ModeGate.current_mode().value,
         "display": display,
-        "backend": "READY",
-        "guard": "ARMED"
+        "environment_hash": EnvironmentContract.fingerprint_hash(env_fp),
+        "status": "BOOTSTRAP_OK",
     }
+
 
 if __name__ == "__main__":
     print(bootstrap())
