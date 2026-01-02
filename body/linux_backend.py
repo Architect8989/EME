@@ -6,7 +6,7 @@ import numpy as np
 
 from core.mode_gate import ModeGate, Mode
 from core.poison import Poison
-from execution.backend_contract import BackendBase, Result, ErrorCode
+from execution.backend_contract import BackendBase
 
 
 MAX_PX_PER_SEC = 100
@@ -15,7 +15,7 @@ MOVE_STEP_PX = 1
 
 class LinuxBackend(BackendBase):
     def __init__(self):
-        Poison.assert_clean()
+        super().__init__()
         self._mss = mss.mss()
         self._screen = self._primary_monitor()
 
@@ -23,7 +23,7 @@ class LinuxBackend(BackendBase):
         Poison.assert_clean()
         monitors = self._mss.monitors
         if not monitors or len(monitors) < 2:
-            Poison.trigger("Primary monitor not found")
+            Poison.trigger("primary monitor not found")
         return monitors[1]
 
     def _run(self, cmd):
@@ -35,7 +35,7 @@ class LinuxBackend(BackendBase):
             text=True,
         )
         if p.returncode != 0:
-            Poison.trigger(f"Command failed: {p.stderr.strip()}")
+            Poison.trigger(f"command failed: {p.stderr.strip()}")
         return p.stdout.strip()
 
     def _capture(self) -> np.ndarray:
@@ -43,10 +43,10 @@ class LinuxBackend(BackendBase):
         try:
             frame = np.array(self._mss.grab(self._screen))
         except Exception as e:
-            Poison.trigger(f"Screen capture failed: {e}")
+            Poison.trigger(f"screen capture failed: {e}")
 
         if frame.size == 0:
-            Poison.trigger("Empty screen frame captured")
+            Poison.trigger("empty screen frame captured")
 
         return frame
 
@@ -60,7 +60,7 @@ class LinuxBackend(BackendBase):
                 vals[k] = int(v)
 
         if "X" not in vals or "Y" not in vals:
-            Poison.trigger("Cursor position incomplete")
+            Poison.trigger("cursor position incomplete")
 
         return vals["X"], vals["Y"]
 
@@ -70,20 +70,20 @@ class LinuxBackend(BackendBase):
         h = self._screen["height"] - 1
         return max(0, min(x, w)), max(0, min(y, h))
 
-    def _impl_screenshot(self) -> Result:
+    def _impl_screenshot(self) -> dict:
         Poison.assert_clean()
         ModeGate.assert_allowed(require=Mode.PROBE)
 
         frame = self._capture()
 
-        return Result.ok({
+        return {
             "width": frame.shape[1],
             "height": frame.shape[0],
             "format": "raw",
             "mean_delta": 0.0,
-        })
+        }
 
-    def _impl_move_mouse(self, x: int, y: int) -> Result:
+    def _impl_move_mouse(self, x: int, y: int) -> dict:
         Poison.assert_clean()
         ModeGate.assert_allowed(require=Mode.EXECUTE)
 
@@ -94,7 +94,7 @@ class LinuxBackend(BackendBase):
         dy = ty - cy
 
         if abs(dx) > MOVE_STEP_PX or abs(dy) > MOVE_STEP_PX:
-            Poison.trigger("Unsafe mouse movement requested")
+            Poison.trigger("unsafe mouse movement requested")
 
         before = self._capture()
         self._run(["xdotool", "mousemove", str(tx), str(ty)])
@@ -103,23 +103,20 @@ class LinuxBackend(BackendBase):
         delta = float(np.mean(np.abs(before.astype(np.int16) - after.astype(np.int16))))
 
         if delta <= 0:
-            Poison.trigger("Mouse movement produced no visual delta")
+            Poison.trigger("mouse movement produced no visual delta")
 
-        return Result.ok({
+        return {
             "from": (cx, cy),
             "to": (tx, ty),
             "delta": delta,
-        })
+        }
 
-    def _impl_click(self, button: str, count: int) -> Result:
+    def _impl_click(self, button: str, count: int) -> dict:
         Poison.assert_clean()
         ModeGate.assert_allowed(require=Mode.EXECUTE)
-        Poison.trigger("Click action not implemented")
+        Poison.trigger("click action not implemented")
 
-    def _impl_type_text(self, text: str) -> Result:
+    def _impl_type_text(self, text: str) -> dict:
         Poison.assert_clean()
         ModeGate.assert_allowed(require=Mode.EXECUTE)
-        Poison.trigger("Type action not implemented")
-
-    def self_test(self):
-        Poison.trigger("self_test is forbidden under authority model")
+        Poison.trigger("type action not implemented")
