@@ -1,60 +1,75 @@
-"""
-Audit-grade logger.
-Append-only. JSONL. No silence. No guessing.
-"""
-
-import os
 import json
 import time
 import uuid
 from pathlib import Path
+from typing import Optional
 
 
 LOG_DIR = Path("logs")
 CRASH_DIR = LOG_DIR / "crash"
 
 
-def _ensure_dirs():
-    LOG_DIR.mkdir(exist_ok=True)
-    CRASH_DIR.mkdir(exist_ok=True)
-
-
-_ensure_dirs()
+class LoggerError(Exception):
+    pass
 
 
 class Logger:
-    def __init__(self):
-        self.run_id = uuid.uuid4().hex
+    _initialized: bool = False
+    _run_id: Optional[str] = None
 
-    def _write(self, path: Path, record: dict):
+    @classmethod
+    def init(cls):
+        if cls._initialized:
+            return
+        try:
+            LOG_DIR.mkdir(exist_ok=True)
+            CRASH_DIR.mkdir(exist_ok=True)
+        except Exception as e:
+            raise LoggerError(f"Logger init failed: {e}")
+        cls._run_id = uuid.uuid4().hex
+        cls._initialized = True
+
+    @classmethod
+    def assert_initialized(cls):
+        if not cls._initialized:
+            raise LoggerError("Logger used before initialization")
+
+    @classmethod
+    def _write(cls, path: Path, record: dict):
+        cls.assert_initialized()
+
         record["monotonic_ts"] = time.monotonic()
         record["wall_ts"] = time.time()
-        record["run_id"] = self.run_id
+        record["run_id"] = cls._run_id
 
         line = json.dumps(record, separators=(",", ":"), sort_keys=True)
 
-        with open(path, "a", encoding="utf-8") as f:
-            f.write(line + "\n")
+        try:
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+        except Exception as e:
+            raise LoggerError(f"Logger write failed: {e}")
 
-    def record(self, record: dict):
-        path = LOG_DIR / "events.jsonl"
-        self._write(path, record)
+    @classmethod
+    def record(cls, record: dict):
+        cls._write(LOG_DIR / "events.jsonl", record)
 
-    def crash(self, message: str, extra: dict | None = None):
+    @classmethod
+    def crash(cls, message: str, extra: dict | None = None):
         payload = {"type": "crash", "msg": message}
         if extra:
             payload["extra"] = extra
-        path = CRASH_DIR / "crash.jsonl"
-        self._write(path, payload)
+        cls._write(CRASH_DIR / "crash.jsonl", payload)
 
 
-def log_event(name: str, meta: dict | None = None):
-    logger = Logger()
+# ---- Public, mechanically stable API ----
+
+def log(name: str, meta: dict | None = None):
     payload = {"type": "event", "name": name}
     if meta:
         payload["meta"] = meta
-    logger.record(payload)
+    Logger.record(payload)
 
 
 def log_crash(message: str, extra: dict | None = None):
-    Logger().crash(message, extra)
+    Logger.crash(message, extra)
