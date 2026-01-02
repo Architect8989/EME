@@ -1,13 +1,10 @@
 from dataclasses import dataclass
-from typing import Callable, Any, Iterable
+from typing import Callable, Iterable
 
 from core.mode_gate import ModeGate, Mode
-from core.state_snapshot import StateSnapshot, StateSnapshotError
+from core.poison import Poison
+from core.state_snapshot import StateSnapshot
 from execution.backend_contract import BackendBase, Result, ErrorCode
-
-
-class ActionContractViolation(Exception):
-    pass
 
 
 @dataclass(frozen=True)
@@ -25,31 +22,54 @@ class ActionContract:
         backend: BackendBase,
         action: Callable[[], Result],
     ) -> Result:
+        Poison.assert_clean()
         ModeGate.assert_allowed(require=self.allowed_mode)
 
         try:
             before = StateSnapshot.from_backend(backend)
-        except StateSnapshotError as e:
-            raise ActionContractViolation(f"{self.name}: state capture failed (before): {e}")
+        except Exception as e:
+            Poison.trigger(f"{self.name}: failed to capture pre-action state: {e}")
 
-        if not self.precondition(before):
+        try:
+            pre_ok = self.precondition(before)
+        except Exception as e:
+            Poison.trigger(f"{self.name}: precondition evaluation error: {e}")
+
+        if pre_ok is False:
             return Result.err(ErrorCode.PRECONDITION_FAILED)
 
-        for forbid in self.forbidden:
-            if forbid(before):
-                ModeGate.kill(f"{self.name}: forbidden state detected")
+        if pre_ok is None:
+            Poison.trigger(f"{self.name}: precondition indeterminate")
 
+        for forbid in self.forbidden:
+            try:
+                forbidden_hit = forbid(before)
+            except Exception as e:
+                Poison.trigger(f"{self.name}: forbidden check error: {e}")
+
+            if forbidden_hit:
+                Poison.trigger(f"{self.name}: forbidden state detected")
+
+        Poison.assert_clean()
         result = action()
+
         if not result.ok:
             return result
 
         try:
             after = StateSnapshot.from_backend(backend)
-        except StateSnapshotError as e:
-            ModeGate.kill(f"{self.name}: state capture failed (after): {e}")
-            raise
+        except Exception as e:
+            Poison.trigger(f"{self.name}: failed to capture post-action state: {e}")
 
-        if not self.postcondition(before, after):
+        try:
+            post_ok = self.postcondition(before, after)
+        except Exception as e:
+            Poison.trigger(f"{self.name}: postcondition evaluation error: {e}")
+
+        if post_ok is False:
             ModeGate.kill(f"{self.name}: postcondition violated")
+
+        if post_ok is None:
+            Poison.trigger(f"{self.name}: postcondition indeterminate")
 
         return result
