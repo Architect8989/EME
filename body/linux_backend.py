@@ -5,6 +5,7 @@ from typing import Tuple
 import mss
 import numpy as np
 
+from core.mode_gate import ModeGate, Mode
 from execution.backend_contract import BackendBase, Result, ErrorCode
 
 
@@ -63,6 +64,7 @@ class LinuxBackend(BackendBase):
         return max(0, min(x, w)), max(0, min(y, h))
 
     def _impl_screenshot(self) -> Result:
+        ModeGate.assert_allowed(require=Mode.PROBE)
         frame = self._capture()
         return Result.ok({
             "width": frame.shape[1],
@@ -72,6 +74,8 @@ class LinuxBackend(BackendBase):
         })
 
     def _impl_move_mouse(self, x: int, y: int) -> Result:
+        ModeGate.assert_allowed(require=Mode.EXECUTE)
+
         cx, cy = self._cursor()
         tx, ty = self._clamp(x, y)
 
@@ -98,28 +102,12 @@ class LinuxBackend(BackendBase):
         })
 
     def _impl_click(self, button: str, count: int) -> Result:
+        ModeGate.assert_allowed(require=Mode.EXECUTE)
         return Result.err(ErrorCode.UNAVAILABLE)
 
     def _impl_type_text(self, text: str) -> Result:
+        ModeGate.assert_allowed(require=Mode.EXECUTE)
         return Result.err(ErrorCode.UNAVAILABLE)
 
     def self_test(self):
-        before = self._capture()
-        x, y = self._cursor()
-
-        dx = 1 if x + 1 < self._screen["width"] else -1
-        self._run(["xdotool", "mousemove", str(x + dx), str(y)])
-        time.sleep(1.0 / MAX_PX_PER_SEC)
-
-        after = self._capture()
-        nx, ny = self._cursor()
-
-        if abs(nx - x) != 1:
-            raise RuntimeError("Mouse movement verification failed")
-
-        delta = float(np.mean(np.abs(before.astype(np.int16) - after.astype(np.int16))))
-        if delta <= 0:
-            raise RuntimeError("No visual delta detected")
-
-        self._run(["xdotool", "mousemove", str(x), str(y)])
-        return True
+        raise RuntimeError("self_test is forbidden under authority model")
