@@ -1,8 +1,12 @@
-from tools.shell import probe_system_identity
+from core.system_state import SystemState
 
 
 class ProbeAction:
     id = "probe.system_identity"
 
     def run(self):
-        return probe_system_identity()
+        SystemState.assert_initialized()
+        raise RuntimeError(
+            "ProbeAction is inert in this build. "
+            "Execution must occur through the executor."
+        )
