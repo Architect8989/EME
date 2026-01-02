@@ -1,19 +1,22 @@
 from __future__ import annotations
-from dataclasses import dataclass
-from typing import Any, Protocol
-from enum import Enum
+
 import abc
 import time
 import threading
+from dataclasses import dataclass
+from enum import Enum
+from typing import Any, Protocol
+
+from core.system_state import SystemState
+from core.poison import Poison
 
 
 class ErrorCode(str, Enum):
     OK = "OK"
     TIMEOUT = "TIMEOUT"
     INVALID_ARGUMENT = "INVALID_ARGUMENT"
-    OS_REJECTED = "OS_REJECTED"
-    PERMISSION_DENIED = "PERMISSION_DENIED"
     PRECONDITION_VIOLATION = "PRECONDITION_VIOLATION"
+    UNAVAILABLE = "UNAVAILABLE"
     UNKNOWN = "UNKNOWN"
 
 
@@ -26,11 +29,11 @@ class Result:
     finished_at_ns: int
 
     @staticmethod
-    def success(started_at_ns: int, finished_at_ns: int, **details: Any) -> "Result":
+    def ok_result(started_at_ns: int, finished_at_ns: int, **details: Any) -> "Result":
         return Result(True, ErrorCode.OK, details, started_at_ns, finished_at_ns)
 
     @staticmethod
-    def failure(
+    def err_result(
         error_code: ErrorCode,
         started_at_ns: int,
         finished_at_ns: int,
@@ -40,239 +43,126 @@ class Result:
 
 
 class BackendContract(Protocol):
-    def screenshot(
-        self,
-        *,
-        timeout_seconds: float,
-        latest_screenshot_timestamp_ns: int,
-    ) -> Result:
-        ...
-
-    def move_mouse(
-        self,
-        x: int,
-        y: int,
-        *,
-        timeout_seconds: float,
-        latest_screenshot_timestamp_ns: int,
-    ) -> Result:
-        ...
-
-    def click(
-        self,
-        button: str,
-        count: int,
-        *,
-        timeout_seconds: float,
-        latest_screenshot_timestamp_ns: int,
-    ) -> Result:
-        ...
-
-    def type_text(
-        self,
-        text: str,
-        *,
-        timeout_seconds: float,
-        latest_screenshot_timestamp_ns: int,
-    ) -> Result:
-        ...
+    def screenshot(self) -> Result: ...
+    def move_mouse(self, x: int, y: int) -> Result: ...
+    def click(self, button: str, count: int) -> Result: ...
+    def type_text(self, text: str) -> Result: ...
 
 
 class BackendBase(BackendContract, abc.ABC):
-    def _guard_preconditions(self, timeout_seconds: float, ts: int) -> str | None:
-        if timeout_seconds is None or timeout_seconds <= 0:
-            return "invalid_timeout"
-        if ts is None or ts <= 0:
-            return "invalid_timestamp"
-        return None
+    """
+    Base class for all OS backends.
 
-    def _run_with_timeout(self, timeout_seconds: float, fn, *args, **kwargs):
-        result_holder = {"res": None, "exc": None}
+    Mechanical guarantees:
+    - Cannot be used before bootstrap
+    - Cannot be used after poison
+    - No default success paths
+    - No import-time side effects
+    """
 
-        def target():
-            try:
-                result_holder["res"] = fn(*args, **kwargs)
-            except Exception as e:
-                result_holder["exc"] = e
+    def __init__(self):
+        SystemState.assert_initialized()
+        Poison.assert_clean()
 
-        t = threading.Thread(target=target, daemon=True)
-        t.start()
-        t.join(timeout_seconds)
+    def _guard(self):
+        SystemState.assert_initialized()
+        Poison.assert_clean()
 
-        if t.is_alive():
-            return "timeout", None, None
-
-        if result_holder["exc"] is not None:
-            return "exception", None, result_holder["exc"]
-
-        return "ok", result_holder["res"], None
-
-    def screenshot(
-        self,
-        *,
-        timeout_seconds: float,
-        latest_screenshot_timestamp_ns: int,
-    ) -> Result:
+    def screenshot(self) -> Result:
+        self._guard()
         started = time.time_ns()
-        pre = self._guard_preconditions(timeout_seconds, latest_screenshot_timestamp_ns)
-        if pre:
+        try:
+            payload = self._impl_screenshot()
+        except Exception as e:
             finished = time.time_ns()
-            return Result.failure(
-                ErrorCode.PRECONDITION_VIOLATION,
-                started,
-                finished,
-                reason=pre,
+            return Result.err_result(
+                ErrorCode.UNKNOWN, started, finished, error=str(e)
             )
-
-        status, payload, exc = self._run_with_timeout(
-            timeout_seconds, self._impl_screenshot
-        )
         finished = time.time_ns()
-
-        if status == "timeout":
-            return Result.failure(ErrorCode.TIMEOUT, started, finished)
-        if exc:
-            return Result.failure(ErrorCode.UNKNOWN, started, finished, error=str(exc))
-
-        ok = isinstance(payload, dict) and all(
-            k in payload for k in ("width", "height", "format", "sha256", "storage_key")
-        )
-        if not ok:
-            return Result.failure(ErrorCode.UNKNOWN, started, finished, reason="bad_payload")
-
-        return Result.success(started, finished, **payload)
-
-    def move_mouse(
-        self,
-        x: int,
-        y: int,
-        *,
-        timeout_seconds: float,
-        latest_screenshot_timestamp_ns: int,
-    ) -> Result:
-        started = time.time_ns()
-        pre = self._guard_preconditions(timeout_seconds, latest_screenshot_timestamp_ns)
-        if pre:
-            finished = time.time_ns()
-            return Result.failure(
-                ErrorCode.PRECONDITION_VIOLATION,
-                started,
-                finished,
-                reason=pre,
+        if not isinstance(payload, dict):
+            return Result.err_result(
+                ErrorCode.UNKNOWN, started, finished, reason="bad_payload"
             )
+        return Result.ok_result(started, finished, **payload)
 
+    def move_mouse(self, x: int, y: int) -> Result:
+        self._guard()
+        started = time.time_ns()
         if not isinstance(x, int) or not isinstance(y, int):
             finished = time.time_ns()
-            return Result.failure(
-                ErrorCode.INVALID_ARGUMENT, started, finished, reason="coords_not_int"
+            return Result.err_result(
+                ErrorCode.INVALID_ARGUMENT, started, finished
             )
-
-        status, payload, exc = self._run_with_timeout(
-            timeout_seconds, self._impl_move_mouse, x, y
-        )
+        try:
+            payload = self._impl_move_mouse(x, y)
+        except Exception as e:
+            finished = time.time_ns()
+            return Result.err_result(
+                ErrorCode.UNKNOWN, started, finished, error=str(e)
+            )
         finished = time.time_ns()
+        if not isinstance(payload, dict):
+            return Result.err_result(
+                ErrorCode.UNKNOWN, started, finished, reason="bad_payload"
+            )
+        return Result.ok_result(started, finished, **payload)
 
-        if status == "timeout":
-            return Result.failure(ErrorCode.TIMEOUT, started, finished)
-        if exc:
-            return Result.failure(ErrorCode.UNKNOWN, started, finished, error=str(exc))
-
-        if not isinstance(payload, dict) or "final" not in payload:
-            return Result.failure(ErrorCode.UNKNOWN, started, finished, reason="bad_payload")
-
-        return Result.success(started, finished, requested=(x, y), **payload)
-
-    def click(
-        self,
-        button: str,
-        count: int,
-        *,
-        timeout_seconds: float,
-        latest_screenshot_timestamp_ns: int,
-    ) -> Result:
+    def click(self, button: str, count: int) -> Result:
+        self._guard()
         started = time.time_ns()
-        pre = self._guard_preconditions(timeout_seconds, latest_screenshot_timestamp_ns)
-        if pre:
+        if button not in ("left", "right", "middle") or count <= 0:
             finished = time.time_ns()
-            return Result.failure(
-                ErrorCode.PRECONDITION_VIOLATION,
-                started,
-                finished,
-                reason=pre,
+            return Result.err_result(
+                ErrorCode.INVALID_ARGUMENT, started, finished
             )
-
-        if button not in ("left", "right", "middle") or not (1 <= count <= 3):
+        try:
+            payload = self._impl_click(button, count)
+        except Exception as e:
             finished = time.time_ns()
-            return Result.failure(
-                ErrorCode.INVALID_ARGUMENT,
-                started,
-                finished,
-                reason="button_or_count_invalid",
+            return Result.err_result(
+                ErrorCode.UNKNOWN, started, finished, error=str(e)
             )
-
-        status, payload, exc = self._run_with_timeout(
-            timeout_seconds, self._impl_click, button, count
-        )
         finished = time.time_ns()
+        if payload is not None and not isinstance(payload, dict):
+            return Result.err_result(
+                ErrorCode.UNKNOWN, started, finished, reason="bad_payload"
+            )
+        return Result.ok_result(started, finished, **(payload or {}))
 
-        if status == "timeout":
-            return Result.failure(ErrorCode.TIMEOUT, started, finished)
-        if exc:
-            return Result.failure(ErrorCode.UNKNOWN, started, finished, error=str(exc))
-
-        return Result.success(started, finished, button=button, count=count, **(payload or {}))
-
-    def type_text(
-        self,
-        text: str,
-        *,
-        timeout_seconds: float,
-        latest_screenshot_timestamp_ns: int,
-    ) -> Result:
+    def type_text(self, text: str) -> Result:
+        self._guard()
         started = time.time_ns()
-        pre = self._guard_preconditions(timeout_seconds, latest_screenshot_timestamp_ns)
-        if pre:
+        if not isinstance(text, str) or not text:
             finished = time.time_ns()
-            return Result.failure(
-                ErrorCode.PRECONDITION_VIOLATION,
-                started,
-                finished,
-                reason=pre,
+            return Result.err_result(
+                ErrorCode.INVALID_ARGUMENT, started, finished
             )
-
-        if not isinstance(text, str) or len(text) == 0 or len(text) > 4096:
+        try:
+            payload = self._impl_type_text(text)
+        except Exception as e:
             finished = time.time_ns()
-            return Result.failure(
-                ErrorCode.INVALID_ARGUMENT,
-                started,
-                finished,
-                reason="text_invalid",
+            return Result.err_result(
+                ErrorCode.UNKNOWN, started, finished, error=str(e)
             )
-
-        status, payload, exc = self._run_with_timeout(
-            timeout_seconds, self._impl_type_text, text
-        )
         finished = time.time_ns()
-
-        if status == "timeout":
-            return Result.failure(ErrorCode.TIMEOUT, started, finished)
-        if exc:
-            return Result.failure(ErrorCode.UNKNOWN, started, finished, error=str(exc))
-
-        return Result.success(started, finished, length=len(text), **(payload or {}))
+        if payload is not None and not isinstance(payload, dict):
+            return Result.err_result(
+                ErrorCode.UNKNOWN, started, finished, reason="bad_payload"
+            )
+        return Result.ok_result(started, finished, **(payload or {}))
 
     @abc.abstractmethod
     def _impl_screenshot(self) -> dict:
-        ...
+        raise NotImplementedError
 
     @abc.abstractmethod
     def _impl_move_mouse(self, x: int, y: int) -> dict:
-        ...
+        raise NotImplementedError
 
     @abc.abstractmethod
     def _impl_click(self, button: str, count: int) -> dict:
-        ...
+        raise NotImplementedError
 
     @abc.abstractmethod
     def _impl_type_text(self, text: str) -> dict:
-        ...
+        raise NotImplementedError
