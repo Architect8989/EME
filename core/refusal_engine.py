@@ -3,12 +3,14 @@ from dataclasses import dataclass
 from typing import Optional
 
 from core.mode_gate import ModeGate
+from core.poison import Poison
 
 
 class RefusalLevel(Enum):
     REFUSE = auto()
     ABORT = auto()
     KILL = auto()
+    POISON = auto()
 
 
 class RefusalReason(Enum):
@@ -57,6 +59,9 @@ class RefusalEngine:
         if level == RefusalLevel.KILL:
             ModeGate.kill(f"{reason.name}: {message}")
 
+        if level == RefusalLevel.POISON:
+            Poison.trigger(f"{reason.name}: {message}")
+
         raise RuntimeError("Unreachable refusal level")
 
     @classmethod
@@ -81,4 +86,12 @@ class RefusalEngine:
             level=RefusalLevel.KILL,
             reason=reason,
             message=message,
-          )
+        )
+
+    @classmethod
+    def poison(cls, reason: RefusalReason, message: str):
+        return cls.decide(
+            level=RefusalLevel.POISON,
+            reason=reason,
+            message=message,
+            )
