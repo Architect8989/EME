@@ -1,13 +1,16 @@
-import os
-os.environ["DISPLAY"] = ":99"
-import time
-from execution.life_loop import LifeLoop
-from execution.action_executor import ActionExecutor
-from core.logger import Logger
-from actions.probe_action import ProbeAction
+from core.system_state import SystemState
 
-loop = LifeLoop(ActionExecutor(), Logger())
 
-for _ in range(10000):
-    loop.run_experiment(ProbeAction())
-    time.sleep(0.2)
+class RunnerDisabledError(RuntimeError):
+    pass
+
+
+def run_loop(*args, **kwargs):
+    SystemState.assert_initialized()
+    raise RunnerDisabledError(
+        "run_loop is disabled. Use bootstrap + executor only."
+    )
+
+
+if __name__ == "__main__":
+    run_loop()
