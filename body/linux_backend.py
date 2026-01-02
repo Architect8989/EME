@@ -1,4 +1,3 @@
-import time
 import subprocess
 from typing import Tuple
 
@@ -6,26 +5,29 @@ import mss
 import numpy as np
 
 from core.mode_gate import ModeGate, Mode
+from core.poison import Poison
 from execution.backend_contract import BackendBase, Result, ErrorCode
 
 
 MAX_PX_PER_SEC = 100
 MOVE_STEP_PX = 1
-CAPTURE_RETRY_LIMIT = 2
 
 
 class LinuxBackend(BackendBase):
     def __init__(self):
+        Poison.assert_clean()
         self._mss = mss.mss()
         self._screen = self._primary_monitor()
 
     def _primary_monitor(self):
+        Poison.assert_clean()
         monitors = self._mss.monitors
         if not monitors or len(monitors) < 2:
-            raise RuntimeError("No primary monitor")
+            Poison.trigger("Primary monitor not found")
         return monitors[1]
 
     def _run(self, cmd):
+        Poison.assert_clean()
         p = subprocess.run(
             cmd,
             stdout=subprocess.PIPE,
@@ -33,39 +35,47 @@ class LinuxBackend(BackendBase):
             text=True,
         )
         if p.returncode != 0:
-            raise RuntimeError(p.stderr.strip())
+            Poison.trigger(f"Command failed: {p.stderr.strip()}")
         return p.stdout.strip()
 
     def _capture(self) -> np.ndarray:
-        for _ in range(CAPTURE_RETRY_LIMIT):
-            try:
-                frame = np.array(self._mss.grab(self._screen))
-                if frame.size == 0:
-                    raise RuntimeError("Empty frame")
-                return frame
-            except Exception:
-                time.sleep(0.05)
-        raise RuntimeError("Screen capture unstable")
+        Poison.assert_clean()
+        try:
+            frame = np.array(self._mss.grab(self._screen))
+        except Exception as e:
+            Poison.trigger(f"Screen capture failed: {e}")
+
+        if frame.size == 0:
+            Poison.trigger("Empty screen frame captured")
+
+        return frame
 
     def _cursor(self) -> Tuple[int, int]:
+        Poison.assert_clean()
         out = self._run(["xdotool", "getmouselocation", "--shell"])
         vals = {}
         for line in out.splitlines():
             if "=" in line:
                 k, v = line.split("=", 1)
                 vals[k] = int(v)
+
         if "X" not in vals or "Y" not in vals:
-            raise RuntimeError("Cursor read failed")
+            Poison.trigger("Cursor position incomplete")
+
         return vals["X"], vals["Y"]
 
     def _clamp(self, x: int, y: int) -> Tuple[int, int]:
+        Poison.assert_clean()
         w = self._screen["width"] - 1
         h = self._screen["height"] - 1
         return max(0, min(x, w)), max(0, min(y, h))
 
     def _impl_screenshot(self) -> Result:
+        Poison.assert_clean()
         ModeGate.assert_allowed(require=Mode.PROBE)
+
         frame = self._capture()
+
         return Result.ok({
             "width": frame.shape[1],
             "height": frame.shape[0],
@@ -74,6 +84,7 @@ class LinuxBackend(BackendBase):
         })
 
     def _impl_move_mouse(self, x: int, y: int) -> Result:
+        Poison.assert_clean()
         ModeGate.assert_allowed(require=Mode.EXECUTE)
 
         cx, cy = self._cursor()
@@ -83,17 +94,16 @@ class LinuxBackend(BackendBase):
         dy = ty - cy
 
         if abs(dx) > MOVE_STEP_PX or abs(dy) > MOVE_STEP_PX:
-            return Result.err(ErrorCode.UNSAFE_OPERATION)
+            Poison.trigger("Unsafe mouse movement requested")
 
         before = self._capture()
         self._run(["xdotool", "mousemove", str(tx), str(ty)])
-        time.sleep(1.0 / MAX_PX_PER_SEC)
         after = self._capture()
 
         delta = float(np.mean(np.abs(before.astype(np.int16) - after.astype(np.int16))))
 
         if delta <= 0:
-            return Result.err(ErrorCode.NO_EFFECT)
+            Poison.trigger("Mouse movement produced no visual delta")
 
         return Result.ok({
             "from": (cx, cy),
@@ -102,12 +112,14 @@ class LinuxBackend(BackendBase):
         })
 
     def _impl_click(self, button: str, count: int) -> Result:
+        Poison.assert_clean()
         ModeGate.assert_allowed(require=Mode.EXECUTE)
-        return Result.err(ErrorCode.UNAVAILABLE)
+        Poison.trigger("Click action not implemented")
 
     def _impl_type_text(self, text: str) -> Result:
+        Poison.assert_clean()
         ModeGate.assert_allowed(require=Mode.EXECUTE)
-        return Result.err(ErrorCode.UNAVAILABLE)
+        Poison.trigger("Type action not implemented")
 
     def self_test(self):
-        raise RuntimeError("self_test is forbidden under authority model")
+        Poison.trigger("self_test is forbidden under authority model")
