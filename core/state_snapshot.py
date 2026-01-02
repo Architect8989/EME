@@ -5,24 +5,33 @@ from typing import Tuple
 import numpy as np
 
 from core.mode_gate import ModeGate, Mode
-from execution.backend_contract import BackendBase, Result
+from core.poison import Poison
+from execution.backend_contract import BackendBase
 
 
 HASH_DOWNSCALE = 8
-PIXEL_TOLERANCE = 0.02
-
-
-class StateSnapshotError(Exception):
-    pass
 
 
 def _perceptual_hash(frame: np.ndarray) -> str:
+    if frame is None or frame.size == 0:
+        Poison.trigger("Invalid frame for perceptual hash")
+
+    if frame.ndim != 3 or frame.shape[2] < 3:
+        Poison.trigger("Unexpected frame shape")
+
     gray = frame[..., :3].mean(axis=2)
     h, w = gray.shape
+
+    if h < HASH_DOWNSCALE or w < HASH_DOWNSCALE:
+        Poison.trigger("Frame too small for hashing")
+
     sh, sw = h // HASH_DOWNSCALE, w // HASH_DOWNSCALE
     small = gray[: sh * HASH_DOWNSCALE, : sw * HASH_DOWNSCALE]
     small = small.reshape(sh, HASH_DOWNSCALE, sw, HASH_DOWNSCALE).mean(axis=(1, 3))
-    bits = small > small.mean()
+
+    mean = small.mean()
+    bits = small > mean
+
     return hashlib.sha256(bits.tobytes()).hexdigest()
 
 
@@ -34,35 +43,45 @@ class StateSnapshot:
 
     @classmethod
     def from_backend(cls, backend: BackendBase) -> "StateSnapshot":
+        Poison.assert_clean()
         ModeGate.assert_allowed(require=Mode.PROBE)
 
         res = backend.screenshot()
         if not res.ok:
-            raise StateSnapshotError("Screenshot failed")
+            Poison.trigger("Screenshot failed during state snapshot")
 
-        frame = backend._capture()  # internal, calibrated
+        if "width" not in res.data or "height" not in res.data:
+            Poison.trigger("Screenshot missing resolution metadata")
+
+        width = res.data["width"]
+        height = res.data["height"]
+
+        if width <= 0 or height <= 0:
+            Poison.trigger("Invalid screen resolution")
+
+        frame = backend._capture()
         screen_hash = _perceptual_hash(frame)
 
         cursor = backend._cursor()
-        resolution = (res.data["width"], res.data["height"])
+        if cursor is None or len(cursor) != 2:
+            Poison.trigger("Cursor position unavailable")
+
+        x, y = cursor
+        if x < 0 or y < 0 or x >= width or y >= height:
+            Poison.trigger("Cursor position out of bounds")
 
         return cls(
             screen_hash=screen_hash,
-            resolution=resolution,
-            cursor=cursor,
+            resolution=(width, height),
+            cursor=(x, y),
         )
 
     def equals(self, other: "StateSnapshot") -> bool:
+        if other is None:
+            Poison.trigger("Comparison against null state snapshot")
+
         return (
             self.screen_hash == other.screen_hash
             and self.resolution == other.resolution
             and self.cursor == other.cursor
-        )
-
-    def similarity(self, other: "StateSnapshot") -> float:
-        if self.resolution != other.resolution:
-            return 0.0
-        return 1.0 if self.screen_hash == other.screen_hash else 0.0
-
-    def is_known_relative(self, other: "StateSnapshot") -> bool:
-        return self.similarity(other) >= (1.0 - PIXEL_TOLERANCE)
+)
