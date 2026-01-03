@@ -1,14 +1,3 @@
-"""
-Causality gate.
-
-Answers one question:
-
-Did the observed change plausibly occur *because of* the action,
-given the time window and the amount of change?
-
-Never overwrites facts. Only annotates.
-"""
-
 from typing import Dict, Any, Tuple
 
 
@@ -17,7 +6,7 @@ def evaluate_causality(
     time_window: Tuple[float, float],
     pre_ts: float,
     post_ts: float,
-    max_expected_change: float = 0.25
+    max_expected_change: float = 0.25,
 ) -> Dict[str, Any]:
     """
     Returns an attribution record. Never raises.
@@ -28,52 +17,66 @@ def evaluate_causality(
     """
 
     try:
+        if not isinstance(time_window, tuple) or len(time_window) != 2:
+            return {
+                "attributed": False,
+                "reason": "invalid_time_window",
+            }
+
         action_start, action_end = time_window
 
-        # Missing delta → cannot decide
-        if delta is None:
+        # Missing or malformed delta → cannot decide
+        if not isinstance(delta, dict):
             return {
                 "attributed": False,
-                "reason": "no_delta"
+                "reason": "no_delta",
             }
 
-        # No pixels changed
-        if delta.get("pixels_changed") in (0, None):
+        pixels_changed = delta.get("pixels_changed")
+        percent_changed = delta.get("percent_changed", 0.0)
+
+        # No observable change
+        if not isinstance(pixels_changed, int) or pixels_changed <= 0:
             return {
                 "attributed": False,
-                "reason": "no_observable_change"
+                "reason": "no_observable_change",
             }
 
-        # Change happened entirely before action
+        # Change occurred entirely before the action
         if post_ts < action_start:
             return {
                 "attributed": False,
-                "reason": "change_precedes_action"
+                "reason": "change_precedes_action",
             }
 
-        # Change happens impossibly late relative to capture
-        if pre_ts > action_end and delta.get("percent_changed", 0) > 0:
+        # Change outside plausible action window
+        if pre_ts > action_end:
             return {
                 "attributed": False,
-                "reason": "change_outside_window"
+                "reason": "change_outside_window",
             }
 
-        # Outlier: too much change for a single primitive action
-        pct = delta.get("percent_changed") or 0.0
-        if pct > max_expected_change:
+        # Excessive change for a single primitive action
+        if not isinstance(percent_changed, (int, float)):
             return {
                 "attributed": False,
-                "reason": "excessive_change_outlier"
+                "reason": "invalid_delta",
+            }
+
+        if percent_changed > max_expected_change:
+            return {
+                "attributed": False,
+                "reason": "excessive_change_outlier",
             }
 
         # Passed minimal sanity checks
         return {
             "attributed": True,
-            "reason": "plausible_within_window"
+            "reason": "plausible_within_window",
         }
 
-    except Exception as _:
+    except Exception:
         return {
             "attributed": False,
-            "reason": "causality_evaluator_failure"
-            }
+            "reason": "causality_evaluator_failure",
+        }
