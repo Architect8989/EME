@@ -6,7 +6,6 @@ from execution.backend_contract import BackendBase
 from execution.action_executor import ExecutorToken
 
 
-MAX_PX_PER_SEC = 100
 MOVE_STEP_PX = 1
 
 
@@ -14,49 +13,63 @@ class LinuxBackend(BackendBase):
     """
     Linux X11 backend.
 
-    Mechanical properties:
-    - Zero OS interaction at import time
-    - Cannot be constructed without executor token
-    - Executor token is bound exactly once
-    - All OS effects gated by Mode + Poison + executor token
+    Mechanical guarantees:
+    - No OS interaction at import time
+    - No OS interaction in __init__
+    - Executor token bound exactly once
+    - All OS effects occur only inside _impl_* methods
     """
 
+    __slots__ = ("_np", "_mss_lib", "_subprocess")
+
     def __init__(self, token: ExecutorToken):
-        # ---- constructor authority gate ----
         if not isinstance(token, ExecutorToken):
-            Poison.trigger("backend instantiated without valid executor token")
+            Poison.trigger("backend instantiated without executor token")
 
         super().__init__()
-        Poison.assert_clean()
-
-        # ---- bind executor (irreversible) ----
         self._bind_executor(token)
 
-        # ---- lazy OS / native imports (NO import-time effects) ----
-        import subprocess
-        import numpy as np
-        from mss import mss
-
-        self._subprocess = subprocess
-        self._np = np
-        self._mss_lib = mss
-
-        self._mss = self._mss_lib()
-        self._screen = self._primary_monitor()
+        self._np = None
+        self._mss_lib = None
+        self._subprocess = None
 
     # ─────────────────────────────────────────────
-    # Internal helpers
+    # Lazy OS helpers (executor-gated via callers)
     # ─────────────────────────────────────────────
+
+    def _ensure_libs(self) -> None:
+        if self._np is None:
+            try:
+                import numpy as np
+                from mss import mss
+                import subprocess
+            except BaseException as e:
+                Poison.trigger(f"backend dependency import failed: {repr(e)}")
+
+            self._np = np
+            self._mss_lib = mss
+            self._subprocess = subprocess
 
     def _primary_monitor(self):
-        Poison.assert_clean()
-        monitors = self._mss.monitors
-        if not monitors or len(monitors) < 2:
-            Poison.trigger("primary monitor not found")
-        return monitors[1]
+        self._ensure_libs()
+        with self._mss_lib() as sct:
+            monitors = sct.monitors
+            if not monitors or len(monitors) < 2:
+                Poison.trigger("primary monitor not found")
+            return monitors[1]
+
+    def _grab(self):
+        self._ensure_libs()
+        mon = self._primary_monitor()
+        with self._mss_lib() as sct:
+            img = sct.grab(mon)
+            data = img.bgra if hasattr(img, "bgra") else img.raw
+            if len(data) != img.width * img.height * 4:
+                Poison.trigger("screen buffer size mismatch")
+            return data, img.width, img.height
 
     def _run(self, cmd):
-        Poison.assert_clean()
+        self._ensure_libs()
         p = self._subprocess.run(
             cmd,
             stdout=self._subprocess.PIPE,
@@ -67,61 +80,46 @@ class LinuxBackend(BackendBase):
             Poison.trigger(f"command failed: {p.stderr.strip()}")
         return p.stdout.strip()
 
-    def _capture(self):
-        Poison.assert_clean()
-        try:
-            frame = self._np.array(self._mss.grab(self._screen))
-        except Exception as e:
-            Poison.trigger(f"screen capture failed: {e}")
-
-        if frame.size == 0:
-            Poison.trigger("empty screen frame captured")
-
-        return frame
-
     def _cursor(self) -> Tuple[int, int]:
-        Poison.assert_clean()
         out = self._run(["xdotool", "getmouselocation", "--shell"])
         vals = {}
         for line in out.splitlines():
             if "=" in line:
                 k, v = line.split("=", 1)
                 vals[k] = int(v)
-
         if "X" not in vals or "Y" not in vals:
-            Poison.trigger("cursor position incomplete")
-
+            Poison.trigger("cursor position unavailable")
         return vals["X"], vals["Y"]
 
-    def _clamp(self, x: int, y: int) -> Tuple[int, int]:
-        Poison.assert_clean()
-        w = self._screen["width"] - 1
-        h = self._screen["height"] - 1
-        return max(0, min(x, w)), max(0, min(y, h))
+    def _clamp(self, x: int, y: int, w: int, h: int) -> Tuple[int, int]:
+        return max(0, min(x, w - 1)), max(0, min(y, h - 1))
 
     # ─────────────────────────────────────────────
-    # BackendBase implementations (executor-gated)
+    # BackendBase implementations
     # ─────────────────────────────────────────────
 
     def _impl_screenshot(self) -> dict:
         Poison.assert_clean()
         ModeGate.assert_allowed(require=Mode.PROBE)
 
-        frame = self._capture()
+        buffer, width, height = self._grab()
+        cx, cy = self._cursor()
 
         return {
-            "width": frame.shape[1],
-            "height": frame.shape[0],
-            "format": "raw",
-            "mean_delta": 0.0,
+            "buffer": buffer,
+            "width": width,
+            "height": height,
+            "cursor": (cx, cy),
+            "pixel_format": "BGRA",
         }
 
     def _impl_move_mouse(self, x: int, y: int) -> dict:
         Poison.assert_clean()
         ModeGate.assert_allowed(require=Mode.EXECUTE)
 
+        buffer, width, height = self._grab()
         cx, cy = self._cursor()
-        tx, ty = self._clamp(x, y)
+        tx, ty = self._clamp(x, y, width, height)
 
         dx = tx - cx
         dy = ty - cy
@@ -129,33 +127,19 @@ class LinuxBackend(BackendBase):
         if abs(dx) > MOVE_STEP_PX or abs(dy) > MOVE_STEP_PX:
             Poison.trigger("unsafe mouse movement requested")
 
-        before = self._capture()
         self._run(["xdotool", "mousemove", str(tx), str(ty)])
-        after = self._capture()
-
-        delta = float(
-            self._np.mean(
-                self._np.abs(
-                    before.astype(self._np.int16) - after.astype(self._np.int16)
-                )
-            )
-        )
-
-        if delta <= 0:
-            Poison.trigger("mouse movement produced no visual delta")
 
         return {
             "from": (cx, cy),
             "to": (tx, ty),
-            "delta": delta,
         }
 
     def _impl_click(self, button: str, count: int) -> dict:
         Poison.assert_clean()
         ModeGate.assert_allowed(require=Mode.EXECUTE)
-        Poison.trigger("click action not implemented")
+        Poison.trigger("click not implemented")
 
     def _impl_type_text(self, text: str) -> dict:
         Poison.assert_clean()
         ModeGate.assert_allowed(require=Mode.EXECUTE)
-        Poison.trigger("type action not implemented")
+        Poison.trigger("type_text not implemented")
