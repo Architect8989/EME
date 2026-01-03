@@ -18,6 +18,16 @@ class ExecutorToken:
 
 
 class ActionExecutor:
+    """
+    Sole execution authority.
+
+    Mechanical invariants:
+    - Requires completed bootstrap
+    - Single executor token
+    - No backend access leakage
+    - Fail-closed on any ambiguity
+    """
+
     __slots__ = ("_token", "_backend", "_env_hash", "_calibration")
 
     def __init__(self, *, environment_hash: str):
@@ -28,12 +38,11 @@ class ActionExecutor:
         # ---- executor authority ----
         token = ExecutorToken()
 
-        # ---- lazy backend import (platform-safe) ----
+        # ---- deterministic backend binding ----
         try:
             from body.linux_backend import LinuxBackend
-        except Exception as e:
-            Poison.trigger(f"backend import failed: {e!r}")
-            raise
+        except BaseException as e:
+            Poison.trigger(f"backend import failed: {repr(e)}")
 
         backend = LinuxBackend(token)
 
@@ -41,15 +50,11 @@ class ActionExecutor:
         self._backend = backend
         self._env_hash = environment_hash
 
-        # ---- calibration is mandatory ----
+        # ---- calibration is mandatory and terminal ----
         try:
             self._calibration = load_calibration(environment_hash)
         except CalibrationError as e:
-            RefusalEngine.abort(
-                RefusalReason.CALIBRATION_INVALID,
-                str(e),
-            )
-            raise
+            Poison.trigger(f"calibration invalid: {str(e)}")
 
     def execute(self, action: Any) -> Result:
         # ---- global invariants ----
@@ -64,7 +69,7 @@ class ActionExecutor:
 
         contract = action.contract
 
-        # ---- authority gate ----
+        # ---- mode authority ----
         ModeGate.assert_allowed(require=contract.allowed_mode)
 
         log_event("action.begin", {"action": contract.name})
@@ -83,12 +88,11 @@ class ActionExecutor:
 
             return result
 
-        except Exception as e:
+        except BaseException as e:
             RefusalEngine.kill(
                 RefusalReason.EXECUTION_ERROR,
                 repr(e),
             )
-            raise
 
         finally:
             log_event("action.end", {"action": contract.name})
