@@ -1,24 +1,15 @@
-import platform
-import json
 from typing import Dict
+
+
+class UnsupportedPlatformError(RuntimeError):
+    pass
 
 
 def detect_os() -> Dict[str, str]:
     """
-    Authoritative OS fingerprint.
-    No guessing. No heuristics.
-    Called once at startup.
+    Deterministic placeholder.
+    Platform detection is not permitted in a frozen artifact.
     """
-
-    facts = {
-        "family": platform.system().lower(),      # linux / windows / darwin
-        "release": platform.release(),
-        "version": platform.version(),
-        "machine": platform.machine(),
-    }
-
-    return facts
-
-
-if __name__ == "__main__":
-    print(json.dumps(detect_os(), indent=2))
+    raise UnsupportedPlatformError(
+        "Platform detection is forbidden in this build"
+    )
