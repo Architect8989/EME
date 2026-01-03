@@ -8,16 +8,17 @@ from core.poison import Poison
 from core.system_state import SystemState
 
 
-def hard_abort(reason: str):
+def hard_abort(reason: str) -> None:
     sys.stderr.write(f"[BOOTSTRAP ABORT] {reason}\n")
     sys.stderr.flush()
     sys.exit(1)
 
 
-def bootstrap():
+def bootstrap() -> dict:
+    # bootstrap must never run in poisoned state
     Poison.assert_clean()
 
-    # ---- environment hard checks (fail-closed) ----
+    # ---- fail-closed environment checks ----
     session_type = os.environ.get("XDG_SESSION_TYPE", "").lower()
     if session_type != "x11":
         hard_abort("Wayland detected. X11 required.")
@@ -31,7 +32,7 @@ def bootstrap():
     except Exception as e:
         hard_abort(str(e))
 
-    # ---- kill handling (terminal) ----
+    # ---- terminal kill handling ----
     def _kill(_sig, _frame):
         try:
             Poison.trigger("manual kill signal received")
@@ -41,15 +42,16 @@ def bootstrap():
     signal.signal(signal.SIGINT, _kill)
     signal.signal(signal.SIGTERM, _kill)
 
-    # ---- exclusive initialization authority ----
+    # ---- exclusive bootstrap authority ----
     try:
         token = SystemState._issue_bootstrap_token()
         SystemState.mark_initialized(token)
     except Exception as e:
         hard_abort(f"initialization failed: {e}")
 
-    # ---- initial authority state ----
-    ModeGate.transition(Mode.PROBE)
+    # ---- deterministic initial authority ----
+    ModeGate.disarm()
+    ModeGate.arm(Mode.PROBE)
 
     return {
         "mode": ModeGate.current_mode().value,
