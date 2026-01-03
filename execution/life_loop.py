@@ -1,16 +1,12 @@
 import time
-import threading
 import hashlib
-from typing import Optional
+import sys
 
+from core.poison import Poison
 from core.logger import Logger, log_event, log_crash
 from perception.screen_adapter import ScreenAdapter
 from core.delta import Delta
 from evaluation.causality import evaluate_causality
-
-
-class Timeout(Exception):
-    pass
 
 
 class Unverified(Exception):
@@ -27,43 +23,31 @@ def _hash_record(prev_hash: str, record: dict) -> str:
 
 class LifeLoop:
     """
-    Zero-tolerance execution loop.
+    Hard fail-closed execution loop.
 
-    Contract:
-    observe → act → observe → diff → verify → log → stop-on-failure
+    Invariants:
+    - Any failure poisons the system
+    - No continuation after ambiguity
+    - No retries
+    - No soft freeze
     """
-
-    MAX_TOKENS = 3
 
     def __init__(self, executor, logger: Logger):
         self._executor = executor
         self._logger = logger
         self._screen = ScreenAdapter()
-
-        self._tokens_remaining = self.MAX_TOKENS
-        self._frozen = False
         self._last_hash = ""
 
-    def is_frozen(self) -> bool:
-        return self._frozen
-
     def run_experiment(self, action):
-        if self._frozen:
-            raise Unverified("life loop frozen")
-
-        if self._tokens_remaining <= 0:
-            self._frozen = True
-            raise Unverified("energy exhausted")
-
-        self._tokens_remaining -= 1
-        log_event("experiment.begin", {"tokens_remaining": self._tokens_remaining})
+        Poison.assert_clean()
 
         start_ts = time.monotonic()
         verdict = "UNVERIFIED"
         error = None
-        record = None
 
         try:
+            log_event("experiment.begin")
+
             # OBSERVE (pre)
             pre = self._screen.capture()
 
@@ -77,7 +61,7 @@ class LifeLoop:
             diff = self._screen.diff(pre, post)
             delta = Delta(diff)
 
-            # CAUSALITY (boolean, not score)
+            # CAUSALITY CHECK
             causality = evaluate_causality(
                 delta=delta.to_dict(),
                 time_window=(start_ts, time.monotonic()),
@@ -92,38 +76,35 @@ class LifeLoop:
 
         except Unverified as e:
             error = str(e)
-            verdict = "UNVERIFIED"
-            self._frozen = True
+            Poison.trigger(f"unverified execution: {error}")
 
-        except Exception as e:
+        except BaseException as e:
             error = repr(e)
-            verdict = "ERROR"
-            self._frozen = True
+            Poison.trigger(f"life_loop exception: {error}")
 
-        # RECORD (always)
-        record = {
-            "type": "experiment",
-            "verdict": verdict,
-            "error": error,
-            "duration": time.monotonic() - start_ts,
-            "tokens_remaining": self._tokens_remaining,
-            "frozen": self._frozen,
-        }
+        finally:
+            record = {
+                "type": "experiment",
+                "verdict": verdict,
+                "error": error,
+                "duration": time.monotonic() - start_ts,
+            }
 
-        record_hash = _hash_record(self._last_hash, record)
-        record["record_hash"] = record_hash
-        record["prev_hash"] = self._last_hash
-        self._last_hash = record_hash
+            record_hash = _hash_record(self._last_hash, record)
+            record["record_hash"] = record_hash
+            record["prev_hash"] = self._last_hash
+            self._last_hash = record_hash
 
-        try:
-            self._logger.record(record)
-            log_event(f"experiment.{verdict.lower()}")
-        except Exception as e:
-            log_crash("logging failure", {"error": repr(e)})
-            self._frozen = True
-            raise
+            try:
+                self._logger.record(record)
+                log_event(f"experiment.{verdict.lower()}")
+            except Exception as e:
+                log_crash("logging failure", {"error": repr(e)})
+                os._exit(1)
 
         if verdict != "VERIFIED":
-            raise Unverified(f"experiment failed: {error}")
+            # Should be unreachable because Poison.trigger exits,
+            # but kept as a mechanical backstop.
+            sys.exit(1)
 
         return record
