@@ -11,14 +11,28 @@ MOVE_STEP_PX = 1
 
 
 class LinuxBackend(BackendBase):
+    """
+    Linux X11 backend.
+
+    Mechanical properties:
+    - Zero OS interaction at import time
+    - Cannot be constructed without executor token
+    - Executor token is bound exactly once
+    - All OS effects gated by Mode + Poison + executor token
+    """
+
     def __init__(self, token: ExecutorToken):
+        # ---- constructor authority gate ----
         if not isinstance(token, ExecutorToken):
-            Poison.trigger("backend instantiated without executor token")
+            Poison.trigger("backend instantiated without valid executor token")
 
         super().__init__()
         Poison.assert_clean()
 
-        # ---- lazy OS / native imports (FIX 2) ----
+        # ---- bind executor (irreversible) ----
+        self._bind_executor(token)
+
+        # ---- lazy OS / native imports (NO import-time effects) ----
         import subprocess
         import numpy as np
         from mss import mss
@@ -27,9 +41,12 @@ class LinuxBackend(BackendBase):
         self._np = np
         self._mss_lib = mss
 
-        self._token = token
         self._mss = self._mss_lib()
         self._screen = self._primary_monitor()
+
+    # ─────────────────────────────────────────────
+    # Internal helpers
+    # ─────────────────────────────────────────────
 
     def _primary_monitor(self):
         Poison.assert_clean()
@@ -82,6 +99,10 @@ class LinuxBackend(BackendBase):
         h = self._screen["height"] - 1
         return max(0, min(x, w)), max(0, min(y, h))
 
+    # ─────────────────────────────────────────────
+    # BackendBase implementations (executor-gated)
+    # ─────────────────────────────────────────────
+
     def _impl_screenshot(self) -> dict:
         Poison.assert_clean()
         ModeGate.assert_allowed(require=Mode.PROBE)
@@ -114,7 +135,9 @@ class LinuxBackend(BackendBase):
 
         delta = float(
             self._np.mean(
-                self._np.abs(before.astype(self._np.int16) - after.astype(self._np.int16))
+                self._np.abs(
+                    before.astype(self._np.int16) - after.astype(self._np.int16)
+                )
             )
         )
 
