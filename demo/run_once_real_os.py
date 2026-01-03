@@ -1,3 +1,4 @@
+raise RuntimeError("Invalid entrypoint. Use main.py only.")
 from core.system_state import SystemState
 from core.mode_gate import ModeGate, Mode
 from core.poison import Poison
