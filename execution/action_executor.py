@@ -1,13 +1,14 @@
 import uuid
 from typing import Any
 
-from core.mode_gate import ModeGate, Mode
+from core.mode_gate import ModeGate
 from core.poison import Poison
 from core.refusal_engine import RefusalEngine, RefusalReason
 from core.calibration_profile import load_calibration, CalibrationError
 from core.system_state import SystemState
-from execution.backend_contract import BackendBase, Result
+from execution.backend_contract import Result
 from core.logger import log_event
+from body.linux_backend import LinuxBackend
 
 
 class ExecutorToken:
@@ -18,14 +19,13 @@ class ExecutorToken:
 
 
 class ActionExecutor:
-    def __init__(self, *, backend: BackendBase, environment_hash: str):
+    def __init__(self, *, environment_hash: str):
         SystemState.assert_initialized()
+        Poison.assert_clean()
 
         self._token = ExecutorToken()
-        self._backend = backend
+        self._backend = LinuxBackend(self._token)
         self._env_hash = environment_hash
-
-        self._backend._bind_executor(self._token)
 
         try:
             self._calibration = load_calibration(environment_hash)
@@ -38,9 +38,7 @@ class ActionExecutor:
 
     def execute(self, action: Any) -> Result:
         SystemState.assert_initialized()
-
-        if Poison.is_poisoned():
-            raise RuntimeError("executor blocked: system poisoned")
+        Poison.assert_clean()
 
         if not hasattr(action, "contract"):
             RefusalEngine.kill(
@@ -49,7 +47,6 @@ class ActionExecutor:
             )
 
         contract = action.contract
-
         ModeGate.assert_allowed(require=contract.allowed_mode)
 
         log_event("action.begin", {"action": contract.name})
