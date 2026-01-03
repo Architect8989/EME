@@ -7,10 +7,10 @@ from core.poison import Poison
 
 
 class RefusalLevel(Enum):
-    REFUSE = auto()
-    ABORT = auto()
-    KILL = auto()
-    POISON = auto()
+    REFUSE = auto()   # return only, no side effects
+    ABORT = auto()    # poison + immediate exit
+    KILL = auto()     # kill switch + exit
+    POISON = auto()   # poison + exit
 
 
 class RefusalReason(Enum):
@@ -45,27 +45,31 @@ class RefusalEngine:
         level: RefusalLevel,
         reason: RefusalReason,
         message: str,
-    ):
+    ) -> RefusalDecision:
         decision = RefusalDecision(level=level, reason=reason, message=message)
         cls._last = decision
 
-        if level == RefusalLevel.REFUSE:
+        if level is RefusalLevel.REFUSE:
+            # Explicitly non-terminal: caller must stop voluntarily
             return decision
 
-        if level == RefusalLevel.ABORT:
-            ModeGate.disarm()
-            return decision
-
-        if level == RefusalLevel.KILL:
-            ModeGate.kill(f"{reason.name}: {message}")
-
-        if level == RefusalLevel.POISON:
+        if level is RefusalLevel.ABORT:
+            # Terminal: poison and exit immediately
             Poison.trigger(f"{reason.name}: {message}")
 
-        raise RuntimeError("Unreachable refusal level")
+        if level is RefusalLevel.POISON:
+            # Terminal: poison and exit immediately
+            Poison.trigger(f"{reason.name}: {message}")
+
+        if level is RefusalLevel.KILL:
+            # Terminal: kill switch and exit immediately
+            ModeGate.kill(f"{reason.name}: {message}")
+
+        # No execution may continue past this point
+        raise RuntimeError("RefusalEngine reached unreachable state")
 
     @classmethod
-    def refuse(cls, reason: RefusalReason, message: str):
+    def refuse(cls, reason: RefusalReason, message: str) -> RefusalDecision:
         return cls.decide(
             level=RefusalLevel.REFUSE,
             reason=reason,
@@ -73,25 +77,25 @@ class RefusalEngine:
         )
 
     @classmethod
-    def abort(cls, reason: RefusalReason, message: str):
-        return cls.decide(
+    def abort(cls, reason: RefusalReason, message: str) -> None:
+        cls.decide(
             level=RefusalLevel.ABORT,
             reason=reason,
             message=message,
         )
 
     @classmethod
-    def kill(cls, reason: RefusalReason, message: str):
-        return cls.decide(
+    def kill(cls, reason: RefusalReason, message: str) -> None:
+        cls.decide(
             level=RefusalLevel.KILL,
             reason=reason,
             message=message,
         )
 
     @classmethod
-    def poison(cls, reason: RefusalReason, message: str):
-        return cls.decide(
+    def poison(cls, reason: RefusalReason, message: str) -> None:
+        cls.decide(
             level=RefusalLevel.POISON,
             reason=reason,
             message=message,
-            )
+        )
