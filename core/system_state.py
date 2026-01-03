@@ -10,6 +10,16 @@ class _BootstrapToken:
 
 
 class SystemState:
+    """
+    Global system state with strict mechanical guarantees.
+
+    Invariants:
+    - Bootstrap is single-use and monotonic
+    - Poison is terminal and irreversible
+    - Poisoned ≠ uninitialized
+    - No re-bootstrap after poison
+    """
+
     _lock = threading.Lock()
 
     _initialized: bool = False
@@ -62,10 +72,9 @@ class SystemState:
 
     @classmethod
     def _poison_locked(cls, reason: str | None):
+        # Terminal state: never reset _initialized
         cls._poisoned = True
         cls._token = None
-        # NOTE: _initialized is intentionally NOT reset
-        # Poisoned ≠ uninitialized; poisoned = terminal
 
     # ─────────────────────────────────────────────
     # Guards
