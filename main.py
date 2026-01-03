@@ -1,54 +1,39 @@
 import sys
 
-
-# main.py is NOT importable as a library
 if __name__ != "__main__":
-    raise RuntimeError("main.py is not importable. Execute it directly.")
+    raise RuntimeError("main.py is not importable")
 
 
-def main():
-    # ---- BOOTSTRAP (must be first observable action) ----
+def main() -> None:
     from bootstrap.bootstrap import bootstrap
 
-    info = bootstrap()  # hard-fails on ambiguity
+    info = bootstrap()
 
-    # ---- PROJECT IMPORTS (legal only after bootstrap) ----
     from core.logger import Logger
     from core.mode_gate import ModeGate, Mode
-    from core.poison import Poison, PoisonError
+    from core.poison import Poison
     from execution.action_executor import ActionExecutor
     from execution.life_loop import LifeLoop
 
-    # Platform/backend import is deferred and gated
-    from body.linux_backend import LinuxBackend
-
-    # ---- LOGGER INIT (post-bootstrap only) ----
     Logger.init()
+    logger = Logger.get()
 
-    # ---- INITIAL AUTHORITY STATE ----
-    ModeGate.arm(Mode.PROBE)
+    ModeGate.transition(Mode.PROBE)
 
-    # ---- BACKEND CREATION (under initialized + guarded state) ----
-    backend = LinuxBackend()
-
-    # ---- EXECUTOR HOLDS SOLE AUTHORITY ----
     executor = ActionExecutor(
-        backend=backend,
-        environment_hash=info["environment_hash"],
+        environment_hash=info["environment_hash"]
     )
 
-    # ---- LIFE LOOP (only long-running component) ----
-    loop = LifeLoop(executor)
-    loop.run()
+    loop = LifeLoop(executor=executor, logger=logger)
+    loop.run_experiment(action=None)
 
 
 if __name__ == "__main__":
     try:
         main()
-    except Exception as e:
-        # Any uncaught exception poisons the system and exits
+    except BaseException as e:
         try:
             from core.poison import Poison
-            Poison.trigger(f"unhandled exception: {e!r}")
+            Poison.trigger(f"unhandled exception: {repr(e)}")
         finally:
             sys.exit(1)
