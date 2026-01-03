@@ -1,31 +1,20 @@
-"""
-Image difference utilities.
-
-Compute level-0 deltas:
-- checksums (pre / post)
-- pixel change count
-- percent changed
-- bounding box of changed region (if any)
-
-No semantics. No guesses. Pure measurement.
-"""
-
 import hashlib
 from pathlib import Path
 from typing import Dict, Any, Tuple, Optional
 
-from PIL import Image, ImageChops, ImageStat
+
+def _checksum(path: Path) -> Optional[str]:
+    try:
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(8192), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    except Exception:
+        return None
 
 
-def _checksum(path: Path) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(8192), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
-def _bbox_from_diff(diff_img: Image.Image) -> Optional[Tuple[int, int, int, int]]:
+def _bbox_from_diff(diff_img) -> Optional[Tuple[int, int, int, int]]:
     # PIL returns None if no change
     return diff_img.getbbox()
 
@@ -37,25 +26,27 @@ def compute_delta(pre_path: Path, post_path: Path) -> Dict[str, Any]:
     """
 
     try:
+        # ---- lazy imports (FIX 2) ----
+        from PIL import Image, ImageChops, ImageStat
+
         pre = Image.open(pre_path).convert("L")   # grayscale
         post = Image.open(post_path).convert("L")
 
         if pre.size != post.size:
-            # Different shapes — treat as full-frame change
+            total = pre.size[0] * pre.size[1]
             return {
                 "error": None,
                 "pre_checksum": _checksum(pre_path),
                 "post_checksum": _checksum(post_path),
-                "pixels_total": pre.size[0] * pre.size[1],
-                "pixels_changed": pre.size[0] * pre.size[1],
+                "pixels_total": total,
+                "pixels_changed": total,
                 "percent_changed": 1.0,
                 "bbox": [0, 0, pre.size[0], pre.size[1]],
             }
 
         diff = ImageChops.difference(pre, post)
-        stat = ImageStat.Stat(diff)
+        ImageStat.Stat(diff)  # retained to preserve semantics
 
-        # Count non-zero pixels
         pixels_total = pre.size[0] * pre.size[1]
         non_zero = sum(1 for p in diff.getdata() if p != 0)
 
@@ -80,4 +71,4 @@ def compute_delta(pre_path: Path, post_path: Path) -> Dict[str, Any]:
             "pixels_changed": None,
             "percent_changed": None,
             "bbox": None,
-  }
+        }
