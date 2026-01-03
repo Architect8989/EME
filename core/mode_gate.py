@@ -3,7 +3,7 @@ import threading
 import sys
 import time
 
-from core.poison import Poison, PoisonError
+from core.poison import Poison
 
 
 class Mode(Enum):
@@ -24,8 +24,8 @@ class KillSwitch(Exception):
 class ModeGate:
     _lock = threading.RLock()
     _mode: Mode = Mode.REFUSE
-    _armed: bool = False
-    _kill: bool = False
+    _armed_for_execute: bool = False
+    _killed: bool = False
     _since: float | None = None
 
     @classmethod
@@ -35,52 +35,53 @@ class ModeGate:
             return cls._mode
 
     @classmethod
-    def arm(cls, mode: Mode):
-        Poison.assert_clean()
-        with cls._lock:
-            if cls._kill:
-                raise KillSwitch("System is killed")
-
-            if mode == Mode.EXECUTE and not cls._armed:
-                Poison.trigger("EXECUTE requested without prior arming")
-
-            cls._mode = mode
-            cls._since = time.time()
-
-    @classmethod
-    def disarm(cls):
-        with cls._lock:
-            cls._mode = Mode.REFUSE
-            cls._armed = False
-            cls._since = None
-
-    @classmethod
     def arm_execute(cls):
         Poison.assert_clean()
         with cls._lock:
-            if cls._kill:
-                raise KillSwitch("System is killed")
-            cls._armed = True
+            if cls._killed:
+                raise KillSwitch("system killed")
+            if cls._armed_for_execute:
+                return
+            cls._armed_for_execute = True
+
+    @classmethod
+    def transition(cls, target: Mode):
+        Poison.assert_clean()
+        with cls._lock:
+            if cls._killed:
+                raise KillSwitch("system killed")
+
+            # monotonic authority rules
+            if target == Mode.EXECUTE and not cls._armed_for_execute:
+                Poison.trigger("EXECUTE transition without explicit arming")
+
+            if cls._mode == Mode.EXECUTE and target != Mode.EXECUTE:
+                Poison.trigger("illegal transition out of EXECUTE")
+
+            cls._mode = target
+            cls._since = time.time()
 
     @classmethod
     def assert_allowed(cls, *, require: Mode):
         Poison.assert_clean()
         with cls._lock:
-            if cls._kill:
-                raise KillSwitch("Kill switch engaged")
+            if cls._killed:
+                raise KillSwitch("system killed")
 
-            if cls._mode != require:
+            if cls._mode is not require:
                 raise ModeViolation(
-                    f"Operation requires mode={require.value}, "
-                    f"current={cls._mode.value}"
+                    f"mode violation: required={require.value}, current={cls._mode.value}"
                 )
 
     @classmethod
     def kill(cls, reason: str):
         with cls._lock:
-            cls._kill = True
+            if cls._killed:
+                raise KillSwitch("system already killed")
+            cls._killed = True
             cls._mode = Mode.REFUSE
-            cls._armed = False
+            cls._armed_for_execute = False
+
         sys.stderr.write(f"[KILL] {reason}\n")
         sys.stderr.flush()
         raise KillSwitch(reason)
@@ -94,6 +95,3 @@ def require_mode(mode: Mode):
             return fn(*args, **kwargs)
         return wrapper
     return decorator
-
-
-ModeGate.disarm()
