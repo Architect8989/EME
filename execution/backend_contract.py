@@ -12,10 +12,8 @@ from core.poison import Poison
 
 class ErrorCode(str, Enum):
     OK = "OK"
-    TIMEOUT = "TIMEOUT"
     INVALID_ARGUMENT = "INVALID_ARGUMENT"
     PRECONDITION_VIOLATION = "PRECONDITION_VIOLATION"
-    UNAVAILABLE = "UNAVAILABLE"
     UNKNOWN = "UNKNOWN"
 
 
@@ -53,11 +51,11 @@ class BackendBase(BackendContract, abc.ABC):
     Executor-monopoly backend base.
 
     Mechanical guarantees:
-    - Cannot be used before bootstrap
-    - Cannot be used after poison
-    - Cannot be used without executor token
-    - Cannot be rebound to another executor
-    - Direct calls poison the system
+    - Requires completed bootstrap
+    - Requires clean (non-poisoned) state
+    - Requires executor token
+    - Executor token is single-bind
+    - Any misuse poisons the system
     """
 
     __slots__ = ("_executor_token",)
@@ -68,7 +66,7 @@ class BackendBase(BackendContract, abc.ABC):
         self._executor_token: Optional[Any] = None
 
     # ─────────────────────────────────────────────
-    # Executor binding (one-time)
+    # Executor binding (single-use)
     # ─────────────────────────────────────────────
 
     def _bind_executor(self, token: Any) -> None:
@@ -88,15 +86,13 @@ class BackendBase(BackendContract, abc.ABC):
             Poison.trigger("backend used before executor binding")
 
         if token is not self._executor_token:
-            Poison.trigger("invalid executor token used for backend call")
+            Poison.trigger("invalid executor token")
 
     def _guard(self, token: Any) -> None:
-        SystemState.assert_initialized()
-        Poison.assert_clean()
         self._assert_executor(token)
 
     # ─────────────────────────────────────────────
-    # Public API (executor-only)
+    # Executor-only API
     # ─────────────────────────────────────────────
 
     def screenshot(self, *, _executor_token: Any) -> Result:
@@ -104,60 +100,57 @@ class BackendBase(BackendContract, abc.ABC):
         started = time.time_ns()
         try:
             payload = self._impl_screenshot()
-        except Exception as e:
+        except BaseException as e:
             finished = time.time_ns()
-            return Result.err_result(ErrorCode.UNKNOWN, started, finished, error=str(e))
+            Poison.trigger(f"backend screenshot failure: {repr(e)}")
         finished = time.time_ns()
         if not isinstance(payload, dict):
-            return Result.err_result(ErrorCode.UNKNOWN, started, finished, reason="bad_payload")
+            Poison.trigger("backend screenshot returned invalid payload")
         return Result.ok_result(started, finished, **payload)
 
     def move_mouse(self, x: int, y: int, *, _executor_token: Any) -> Result:
         self._guard(_executor_token)
         started = time.time_ns()
         if not isinstance(x, int) or not isinstance(y, int):
-            finished = time.time_ns()
-            return Result.err_result(ErrorCode.INVALID_ARGUMENT, started, finished)
+            Poison.trigger("invalid move_mouse arguments")
         try:
             payload = self._impl_move_mouse(x, y)
-        except Exception as e:
+        except BaseException as e:
             finished = time.time_ns()
-            return Result.err_result(ErrorCode.UNKNOWN, started, finished, error=str(e))
+            Poison.trigger(f"backend move_mouse failure: {repr(e)}")
         finished = time.time_ns()
         if not isinstance(payload, dict):
-            return Result.err_result(ErrorCode.UNKNOWN, started, finished, reason="bad_payload")
+            Poison.trigger("backend move_mouse returned invalid payload")
         return Result.ok_result(started, finished, **payload)
 
     def click(self, button: str, count: int, *, _executor_token: Any) -> Result:
         self._guard(_executor_token)
         started = time.time_ns()
-        if button not in ("left", "right", "middle") or count <= 0:
-            finished = time.time_ns()
-            return Result.err_result(ErrorCode.INVALID_ARGUMENT, started, finished)
+        if button not in ("left", "right", "middle") or not isinstance(count, int) or count <= 0:
+            Poison.trigger("invalid click arguments")
         try:
             payload = self._impl_click(button, count)
-        except Exception as e:
+        except BaseException as e:
             finished = time.time_ns()
-            return Result.err_result(ErrorCode.UNKNOWN, started, finished, error=str(e))
+            Poison.trigger(f"backend click failure: {repr(e)}")
         finished = time.time_ns()
         if payload is not None and not isinstance(payload, dict):
-            return Result.err_result(ErrorCode.UNKNOWN, started, finished, reason="bad_payload")
+            Poison.trigger("backend click returned invalid payload")
         return Result.ok_result(started, finished, **(payload or {}))
 
     def type_text(self, text: str, *, _executor_token: Any) -> Result:
         self._guard(_executor_token)
         started = time.time_ns()
         if not isinstance(text, str) or not text:
-            finished = time.time_ns()
-            return Result.err_result(ErrorCode.INVALID_ARGUMENT, started, finished)
+            Poison.trigger("invalid type_text arguments")
         try:
             payload = self._impl_type_text(text)
-        except Exception as e:
+        except BaseException as e:
             finished = time.time_ns()
-            return Result.err_result(ErrorCode.UNKNOWN, started, finished, error=str(e))
+            Poison.trigger(f"backend type_text failure: {repr(e)}")
         finished = time.time_ns()
         if payload is not None and not isinstance(payload, dict):
-            return Result.err_result(ErrorCode.UNKNOWN, started, finished, reason="bad_payload")
+            Poison.trigger("backend type_text returned invalid payload")
         return Result.ok_result(started, finished, **(payload or {}))
 
     # ─────────────────────────────────────────────
