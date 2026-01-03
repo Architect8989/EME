@@ -38,30 +38,23 @@ class CaptureError(RuntimeError):
     pass
 
 
-class ForensicCapture:
+class ScreenAdapter:
     """
-    Forensic-grade screen capture.
-
-    Mechanical guarantees:
-    - No import-time OS access
-    - Lossless raw buffers only
-    - Monotonic timestamps
-    - SHA-256 hash chain
-    - fsync durability
-    - Crash on any anomaly
+    Executor-authorized forensic screen capture.
     """
 
-    def __init__(self, *, monitor: Optional[int] = None):
+    def __init__(self, *, executor_token: object, monitor: Optional[int] = None):
         SystemState.assert_initialized()
         Poison.assert_clean()
-        ModeGate.assert_allowed(require=Mode.PROBE)
 
+        if executor_token is None:
+            Poison.trigger("screen adapter instantiated without executor token")
+
+        self._executor_token = executor_token
         self._monitor = monitor
         self._lock = threading.Lock()
 
         self._tmpdir = pathlib.Path(tempfile.gettempdir()) / "eme_frames"
-        self._tmpdir.mkdir(exist_ok=True, parents=True)
-
         self._last_timestamp: float = 0.0
         self._last_checksum: str = ""
         self._frame_count: int = 0
@@ -77,26 +70,26 @@ class ForensicCapture:
         return self._tmpdir / f"frame_{int(ts * 1_000_000):020d}.raw"
 
     def _validate_buffer(self, data: bytes, w: int, h: int):
-        expected = w * h * 4
-        if len(data) != expected:
+        if len(data) != w * h * 4:
             raise CaptureError("buffer size mismatch")
 
     def _grab(self) -> Tuple[bytes, int, int, str]:
-        # Lazy import — NO import-time OS effects
         import mss
 
         with mss.mss() as sct:
-            if self._monitor is None:
-                mon = sct.monitors[0]
-            else:
-                if self._monitor >= len(sct.monitors):
-                    raise CaptureError("monitor index out of range")
-                mon = sct.monitors[self._monitor]
+            mon = (
+                sct.monitors[0]
+                if self._monitor is None
+                else sct.monitors[self._monitor]
+            )
 
             img = sct.grab(mon)
             data = img.bgra if hasattr(img, "bgra") else img.raw
             self._validate_buffer(data, img.width, img.height)
             return data, img.width, img.height, "BGRA"
+
+    def _ensure_dirs(self):
+        self._tmpdir.mkdir(exist_ok=True, parents=True)
 
     def _write_atomic(self, data: bytes, path: pathlib.Path):
         tmp = path.with_suffix(".tmp")
@@ -109,9 +102,9 @@ class ForensicCapture:
             raise CaptureError("partial write detected")
 
         tmp.replace(path)
-        dir_fd = os.open(str(path.parent), os.O_RDONLY)
-        os.fsync(dir_fd)
-        os.close(dir_fd)
+        fd = os.open(str(path.parent), os.O_RDONLY)
+        os.fsync(fd)
+        os.close(fd)
 
     def _write_sidecar(self, frame: Frame):
         sidecar = frame.path.with_suffix(".json")
@@ -128,9 +121,9 @@ class ForensicCapture:
             os.fsync(f.fileno())
 
         tmp.replace(sidecar)
-        dir_fd = os.open(str(sidecar.parent), os.O_RDONLY)
-        os.fsync(dir_fd)
-        os.close(dir_fd)
+        fd = os.open(str(sidecar.parent), os.O_RDONLY)
+        os.fsync(fd)
+        os.close(fd)
 
     # ---------- public API ----------
 
@@ -140,6 +133,8 @@ class ForensicCapture:
         ModeGate.assert_allowed(require=Mode.PROBE)
 
         with self._lock:
+            self._ensure_dirs()
+
             for attempt in range(CAPTURE_RETRIES):
                 try:
                     ts = time.monotonic()
@@ -175,7 +170,7 @@ class ForensicCapture:
                     raise
                 except Exception as e:
                     if attempt + 1 >= CAPTURE_RETRIES:
-                        raise CaptureError(str(e))
+                        Poison.trigger(f"screen capture failed: {e}")
                     time.sleep(CAPTURE_BACKOFF)
 
-            raise CaptureError("capture failed unexpectedly")
+            Poison.trigger("screen capture retry exhaustion")
