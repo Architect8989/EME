@@ -1,6 +1,5 @@
 import time
 import hashlib
-import sys
 import os
 
 from core.poison import Poison
