@@ -4,6 +4,8 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
+from core.poison import Poison
+
 
 LOG_DIR = Path("logs")
 CRASH_DIR = LOG_DIR / "crash"
@@ -19,23 +21,28 @@ class Logger:
 
     @classmethod
     def init(cls):
+        Poison.assert_clean()
+
         if cls._initialized:
-            return
+            raise LoggerError("Logger already initialized")
+
         try:
             LOG_DIR.mkdir(exist_ok=True)
             CRASH_DIR.mkdir(exist_ok=True)
         except Exception as e:
-            raise LoggerError(f"Logger init failed: {e}")
+            Poison.trigger(f"Logger init failed: {e}")
+
         cls._run_id = uuid.uuid4().hex
         cls._initialized = True
 
     @classmethod
     def assert_initialized(cls):
         if not cls._initialized:
-            raise LoggerError("Logger used before initialization")
+            Poison.trigger("Logger used before initialization")
 
     @classmethod
     def _write(cls, path: Path, record: dict):
+        Poison.assert_clean()
         cls.assert_initialized()
 
         record["monotonic_ts"] = time.monotonic()
@@ -48,7 +55,7 @@ class Logger:
             with open(path, "a", encoding="utf-8") as f:
                 f.write(line + "\n")
         except Exception as e:
-            raise LoggerError(f"Logger write failed: {e}")
+            Poison.trigger(f"Logger write failed: {e}")
 
     @classmethod
     def record(cls, record: dict):
@@ -62,9 +69,10 @@ class Logger:
         cls._write(CRASH_DIR / "crash.jsonl", payload)
 
 
-# ---- Public, mechanically stable API ----
+# ---- Public API ----
 
 def log(name: str, meta: dict | None = None):
+    Poison.assert_clean()
     payload = {"type": "event", "name": name}
     if meta:
         payload["meta"] = meta
@@ -72,4 +80,5 @@ def log(name: str, meta: dict | None = None):
 
 
 def log_crash(message: str, extra: dict | None = None):
+    Poison.assert_clean()
     Logger.crash(message, extra)
