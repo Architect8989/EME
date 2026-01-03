@@ -17,7 +17,7 @@ class SystemState:
     _token: _BootstrapToken | None = None
 
     # ─────────────────────────────────────────────
-    # Bootstrap
+    # Bootstrap (single-use, monotonic)
     # ─────────────────────────────────────────────
 
     @classmethod
@@ -52,7 +52,7 @@ class SystemState:
             cls._token = None  # irreversibly consumed
 
     # ─────────────────────────────────────────────
-    # Poisoning (irreversible)
+    # Poisoning (terminal, irreversible)
     # ─────────────────────────────────────────────
 
     @classmethod
@@ -63,8 +63,9 @@ class SystemState:
     @classmethod
     def _poison_locked(cls, reason: str | None):
         cls._poisoned = True
-        cls._initialized = False
         cls._token = None
+        # NOTE: _initialized is intentionally NOT reset
+        # Poisoned ≠ uninitialized; poisoned = terminal
 
     # ─────────────────────────────────────────────
     # Guards
