@@ -35,9 +35,8 @@ class MoveMouse1px:
     contract = MOVE_MOUSE_1PX_CONTRACT
 
     def _execute(self, backend: BackendBase) -> Result:
-        # Snapshot is executor-gated inside BackendBase
         snap = StateSnapshot.from_backend(backend)
         x, y = snap.cursor
 
-        # All OS effects go through backend with executor token
-        return backend.move_mouse(x + 1, y, _executor_token=backend._executor_token)
+        # OS effect strictly delegated to executor-owned backend
+        return backend.move_mouse(x + 1, y)
