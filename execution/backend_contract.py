@@ -47,27 +47,12 @@ class BackendContract(Protocol):
 
 
 class BackendBase(BackendContract, abc.ABC):
-    """
-    Executor-monopoly backend base.
-
-    Mechanical guarantees:
-    - Requires completed bootstrap
-    - Requires clean (non-poisoned) state
-    - Requires executor token
-    - Executor token is single-bind
-    - Any misuse poisons the system
-    """
-
     __slots__ = ("_executor_token",)
 
     def __init__(self):
         SystemState.assert_initialized()
         Poison.assert_clean()
         self._executor_token: Optional[Any] = None
-
-    # ─────────────────────────────────────────────
-    # Executor binding (single-use)
-    # ─────────────────────────────────────────────
 
     def _bind_executor(self, token: Any) -> None:
         SystemState.assert_initialized()
@@ -91,71 +76,78 @@ class BackendBase(BackendContract, abc.ABC):
     def _guard(self, token: Any) -> None:
         self._assert_executor(token)
 
-    # ─────────────────────────────────────────────
-    # Executor-only API
-    # ─────────────────────────────────────────────
-
     def screenshot(self, *, _executor_token: Any) -> Result:
         self._guard(_executor_token)
         started = time.time_ns()
+
         try:
             payload = self._impl_screenshot()
         except BaseException as e:
-            finished = time.time_ns()
             Poison.trigger(f"backend screenshot failure: {repr(e)}")
+
         finished = time.time_ns()
+
         if not isinstance(payload, dict):
             Poison.trigger("backend screenshot returned invalid payload")
+
         return Result.ok_result(started, finished, **payload)
 
     def move_mouse(self, x: int, y: int, *, _executor_token: Any) -> Result:
         self._guard(_executor_token)
         started = time.time_ns()
+
         if not isinstance(x, int) or not isinstance(y, int):
             Poison.trigger("invalid move_mouse arguments")
+
         try:
             payload = self._impl_move_mouse(x, y)
         except BaseException as e:
-            finished = time.time_ns()
             Poison.trigger(f"backend move_mouse failure: {repr(e)}")
+
         finished = time.time_ns()
+
         if not isinstance(payload, dict):
             Poison.trigger("backend move_mouse returned invalid payload")
+
         return Result.ok_result(started, finished, **payload)
 
     def click(self, button: str, count: int, *, _executor_token: Any) -> Result:
         self._guard(_executor_token)
         started = time.time_ns()
+
         if button not in ("left", "right", "middle") or not isinstance(count, int) or count <= 0:
             Poison.trigger("invalid click arguments")
+
         try:
             payload = self._impl_click(button, count)
         except BaseException as e:
-            finished = time.time_ns()
             Poison.trigger(f"backend click failure: {repr(e)}")
+
         finished = time.time_ns()
+
         if payload is not None and not isinstance(payload, dict):
             Poison.trigger("backend click returned invalid payload")
+
         return Result.ok_result(started, finished, **(payload or {}))
 
     def type_text(self, text: str, *, _executor_token: Any) -> Result:
         self._guard(_executor_token)
         started = time.time_ns()
+
         if not isinstance(text, str) or not text:
             Poison.trigger("invalid type_text arguments")
+
         try:
             payload = self._impl_type_text(text)
         except BaseException as e:
-            finished = time.time_ns()
             Poison.trigger(f"backend type_text failure: {repr(e)}")
+
         finished = time.time_ns()
+
         if payload is not None and not isinstance(payload, dict):
             Poison.trigger("backend type_text returned invalid payload")
-        return Result.ok_result(started, finished, **(payload or {}))
 
-    # ─────────────────────────────────────────────
-    # Backend-specific implementations
-    # ─────────────────────────────────────────────
+        return Result.ok_result(started, finished, **(payload or {}))
 
     @abc.abstractmethod
     def _impl_screenshot(self) -> dict:
