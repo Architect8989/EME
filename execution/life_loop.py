@@ -1,6 +1,7 @@
 import time
 import hashlib
 import sys
+import os
 
 from core.poison import Poison
 from core.logger import Logger, log_event, log_crash
@@ -25,14 +26,15 @@ class LifeLoop:
     """
     Hard fail-closed execution loop.
 
-    Invariants:
-    - Any failure poisons the system
-    - No continuation after ambiguity
+    Mechanical invariants:
     - No retries
-    - No soft freeze
+    - No continuation after ambiguity
+    - Any failure poisons the system
+    - No side effects outside executor
     """
 
     def __init__(self, executor, logger: Logger):
+        Poison.assert_clean()
         self._executor = executor
         self._logger = logger
         self._screen = ScreenAdapter()
@@ -51,8 +53,8 @@ class LifeLoop:
             # OBSERVE (pre)
             pre = self._screen.capture()
 
-            # EXECUTE
-            result = self._executor.execute(action)
+            # EXECUTE (sole authority path)
+            _ = self._executor.execute(action)
 
             # OBSERVE (post)
             post = self._screen.capture()
@@ -61,7 +63,7 @@ class LifeLoop:
             diff = self._screen.diff(pre, post)
             delta = Delta(diff)
 
-            # CAUSALITY CHECK
+            # CAUSALITY (boolean, fail-closed)
             causality = evaluate_causality(
                 delta=delta.to_dict(),
                 time_window=(start_ts, time.monotonic()),
@@ -99,12 +101,12 @@ class LifeLoop:
                 self._logger.record(record)
                 log_event(f"experiment.{verdict.lower()}")
             except Exception as e:
+                # Logging failure is terminal
                 log_crash("logging failure", {"error": repr(e)})
                 os._exit(1)
 
+        # Mechanical backstop — should be unreachable
         if verdict != "VERIFIED":
-            # Should be unreachable because Poison.trigger exits,
-            # but kept as a mechanical backstop.
-            sys.exit(1)
+            os._exit(1)
 
         return record
