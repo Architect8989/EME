@@ -1,6 +1,5 @@
 from enum import Enum
 import threading
-import sys
 import time
 
 from core.poison import Poison
@@ -13,16 +12,23 @@ class Mode(Enum):
     EXECUTE = "execute"
 
 
-class ModeViolation(Exception):
-    pass
-
-
-class KillSwitch(Exception):
+class ModeViolation(RuntimeError):
     pass
 
 
 class ModeGate:
-    _lock = threading.RLock()
+    """
+    Deterministic, fail-closed mode authority.
+
+    Mechanical invariants:
+    - Single global mode
+    - Explicit, monotonic transitions
+    - EXECUTE requires prior arming
+    - No recovery after kill
+    - No side effects outside poison
+    """
+
+    _lock = threading.Lock()
     _mode: Mode = Mode.REFUSE
     _armed_for_execute: bool = False
     _killed: bool = False
@@ -35,38 +41,37 @@ class ModeGate:
             return cls._mode
 
     @classmethod
-    def arm_execute(cls):
+    def arm_execute(cls) -> None:
         Poison.assert_clean()
         with cls._lock:
             if cls._killed:
-                raise KillSwitch("system killed")
+                Poison.trigger("mode gate killed")
             if cls._armed_for_execute:
                 return
             cls._armed_for_execute = True
 
     @classmethod
-    def transition(cls, target: Mode):
+    def transition(cls, target: Mode) -> None:
         Poison.assert_clean()
         with cls._lock:
             if cls._killed:
-                raise KillSwitch("system killed")
+                Poison.trigger("mode gate killed")
 
-            # monotonic authority rules
             if target == Mode.EXECUTE and not cls._armed_for_execute:
-                Poison.trigger("EXECUTE transition without explicit arming")
+                Poison.trigger("EXECUTE transition without arming")
 
-            if cls._mode == Mode.EXECUTE and target != Mode.EXECUTE:
+            if cls._mode == Mode.EXECUTE and target is not Mode.EXECUTE:
                 Poison.trigger("illegal transition out of EXECUTE")
 
             cls._mode = target
             cls._since = time.time()
 
     @classmethod
-    def assert_allowed(cls, *, require: Mode):
+    def assert_allowed(cls, *, require: Mode) -> None:
         Poison.assert_clean()
         with cls._lock:
             if cls._killed:
-                raise KillSwitch("system killed")
+                Poison.trigger("mode gate killed")
 
             if cls._mode is not require:
                 raise ModeViolation(
@@ -74,24 +79,13 @@ class ModeGate:
                 )
 
     @classmethod
-    def kill(cls, reason: str):
+    def kill(cls, reason: str) -> None:
         with cls._lock:
             if cls._killed:
-                raise KillSwitch("system already killed")
+                Poison.trigger("mode gate already killed")
+
             cls._killed = True
             cls._mode = Mode.REFUSE
             cls._armed_for_execute = False
 
-        sys.stderr.write(f"[KILL] {reason}\n")
-        sys.stderr.flush()
-        raise KillSwitch(reason)
-
-
-def require_mode(mode: Mode):
-    def decorator(fn):
-        def wrapper(*args, **kwargs):
-            Poison.assert_clean()
-            ModeGate.assert_allowed(require=mode)
-            return fn(*args, **kwargs)
-        return wrapper
-    return decorator
+        Poison.trigger(f"mode gate kill: {reason}")
