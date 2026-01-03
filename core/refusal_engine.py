@@ -7,10 +7,10 @@ from core.poison import Poison
 
 
 class RefusalLevel(Enum):
-    REFUSE = auto()   # return only, no side effects
-    ABORT = auto()    # poison + immediate exit
-    KILL = auto()     # kill switch + exit
-    POISON = auto()   # poison + exit
+    REFUSE = auto()
+    ABORT = auto()
+    KILL = auto()
+    POISON = auto()
 
 
 class RefusalReason(Enum):
@@ -39,38 +39,37 @@ class RefusalEngine:
         return cls._last
 
     @classmethod
+    def _record(cls, decision: RefusalDecision) -> None:
+        cls._last = decision
+
+    @classmethod
     def decide(
         cls,
         *,
         level: RefusalLevel,
         reason: RefusalReason,
         message: str,
-    ) -> RefusalDecision:
+    ) -> None:
         decision = RefusalDecision(level=level, reason=reason, message=message)
-        cls._last = decision
+        cls._record(decision)
 
         if level is RefusalLevel.REFUSE:
-            # Explicitly non-terminal: caller must stop voluntarily
-            return decision
+            Poison.trigger(f"refusal reached non-terminal state: {reason.name}")
 
         if level is RefusalLevel.ABORT:
-            # Terminal: poison and exit immediately
             Poison.trigger(f"{reason.name}: {message}")
 
         if level is RefusalLevel.POISON:
-            # Terminal: poison and exit immediately
             Poison.trigger(f"{reason.name}: {message}")
 
         if level is RefusalLevel.KILL:
-            # Terminal: kill switch and exit immediately
             ModeGate.kill(f"{reason.name}: {message}")
 
-        # No execution may continue past this point
-        raise RuntimeError("RefusalEngine reached unreachable state")
+        Poison.trigger("refusal engine unreachable state")
 
     @classmethod
-    def refuse(cls, reason: RefusalReason, message: str) -> RefusalDecision:
-        return cls.decide(
+    def refuse(cls, reason: RefusalReason, message: str) -> None:
+        cls.decide(
             level=RefusalLevel.REFUSE,
             reason=reason,
             message=message,
@@ -98,4 +97,4 @@ class RefusalEngine:
             level=RefusalLevel.POISON,
             reason=reason,
             message=message,
-        )
+    )
