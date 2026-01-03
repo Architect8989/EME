@@ -1,5 +1,7 @@
 from typing import Dict, Any, Tuple
 
+from core.poison import Poison
+
 
 def evaluate_causality(
     delta: Dict[str, Any],
@@ -8,75 +10,57 @@ def evaluate_causality(
     post_ts: float,
     max_expected_change: float = 0.25,
 ) -> Dict[str, Any]:
-    """
-    Returns an attribution record. Never raises.
+    if not isinstance(time_window, tuple) or len(time_window) != 2:
+        Poison.trigger("invalid time_window")
 
-    Fields:
-      attributed: bool
-      reason: str
-    """
+    if not isinstance(delta, dict):
+        Poison.trigger("invalid delta")
 
-    try:
-        if not isinstance(time_window, tuple) or len(time_window) != 2:
-            return {
-                "attributed": False,
-                "reason": "invalid_time_window",
-            }
+    if not isinstance(pre_ts, (int, float)) or not isinstance(post_ts, (int, float)):
+        Poison.trigger("invalid timestamps")
 
-        action_start, action_end = time_window
+    action_start, action_end = time_window
 
-        # Missing or malformed delta → cannot decide
-        if not isinstance(delta, dict):
-            return {
-                "attributed": False,
-                "reason": "no_delta",
-            }
+    if not isinstance(action_start, (int, float)) or not isinstance(action_end, (int, float)):
+        Poison.trigger("invalid time_window bounds")
 
-        pixels_changed = delta.get("pixels_changed")
-        percent_changed = delta.get("percent_changed", 0.0)
+    pixels_changed = delta.get("pixels_changed")
+    percent_changed = delta.get("percent_changed")
 
-        # No observable change
-        if not isinstance(pixels_changed, int) or pixels_changed <= 0:
-            return {
-                "attributed": False,
-                "reason": "no_observable_change",
-            }
+    if not isinstance(pixels_changed, int):
+        Poison.trigger("pixels_changed missing or invalid")
 
-        # Change occurred entirely before the action
-        if post_ts < action_start:
-            return {
-                "attributed": False,
-                "reason": "change_precedes_action",
-            }
-
-        # Change outside plausible action window
-        if pre_ts > action_end:
-            return {
-                "attributed": False,
-                "reason": "change_outside_window",
-            }
-
-        # Excessive change for a single primitive action
-        if not isinstance(percent_changed, (int, float)):
-            return {
-                "attributed": False,
-                "reason": "invalid_delta",
-            }
-
-        if percent_changed > max_expected_change:
-            return {
-                "attributed": False,
-                "reason": "excessive_change_outlier",
-            }
-
-        # Passed minimal sanity checks
-        return {
-            "attributed": True,
-            "reason": "plausible_within_window",
-        }
-
-    except Exception:
+    if pixels_changed <= 0:
         return {
             "attributed": False,
-            "reason": "causality_evaluator_failure",
+            "reason": "no_observable_change",
         }
+
+    if not isinstance(percent_changed, (int, float)):
+        Poison.trigger("percent_changed missing or invalid")
+
+    if percent_changed < 0.0:
+        Poison.trigger("negative percent_changed")
+
+    if percent_changed > max_expected_change:
+        return {
+            "attributed": False,
+            "reason": "excessive_change",
+        }
+
+    if post_ts < action_start:
+        return {
+            "attributed": False,
+            "reason": "change_precedes_action",
+        }
+
+    if pre_ts > action_end:
+        return {
+            "attributed": False,
+            "reason": "change_outside_window",
+        }
+
+    return {
+        "attributed": True,
+        "reason": "within_window",
+    }
