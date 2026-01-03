@@ -60,10 +60,16 @@ class BackendBase(BackendContract, abc.ABC):
     - Direct calls poison the system
     """
 
+    __slots__ = ("_executor_token",)
+
     def __init__(self):
         SystemState.assert_initialized()
         Poison.assert_clean()
         self._executor_token: Optional[Any] = None
+
+    # ─────────────────────────────────────────────
+    # Executor binding (one-time)
+    # ─────────────────────────────────────────────
 
     def _bind_executor(self, token: Any) -> None:
         SystemState.assert_initialized()
@@ -88,6 +94,10 @@ class BackendBase(BackendContract, abc.ABC):
         SystemState.assert_initialized()
         Poison.assert_clean()
         self._assert_executor(token)
+
+    # ─────────────────────────────────────────────
+    # Public API (executor-only)
+    # ─────────────────────────────────────────────
 
     def screenshot(self, *, _executor_token: Any) -> Result:
         self._guard(_executor_token)
@@ -149,6 +159,10 @@ class BackendBase(BackendContract, abc.ABC):
         if payload is not None and not isinstance(payload, dict):
             return Result.err_result(ErrorCode.UNKNOWN, started, finished, reason="bad_payload")
         return Result.ok_result(started, finished, **(payload or {}))
+
+    # ─────────────────────────────────────────────
+    # Backend-specific implementations
+    # ─────────────────────────────────────────────
 
     @abc.abstractmethod
     def _impl_screenshot(self) -> dict:
