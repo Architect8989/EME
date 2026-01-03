@@ -6,10 +6,13 @@ class ShellDisabledError(RuntimeError):
     pass
 
 
-def run_shell(*_, **__):
+def run_shell():
+    """
+    Shell execution is permanently disabled in this artifact.
+    This function is a hard fail-closed sink.
+    """
     SystemState.assert_initialized()
     Poison.assert_clean()
     raise ShellDisabledError(
-        "Shell execution is disabled. "
-        "All OS effects must pass through the executor."
+        "Shell execution is forbidden in this build"
     )
