@@ -1,6 +1,5 @@
 import time
 import hashlib
-import os
 
 from core.poison import Poison
 from core.logger import Logger, log_event, log_crash
@@ -23,13 +22,13 @@ def _hash_record(prev_hash: str, record: dict) -> str:
 
 class LifeLoop:
     """
-    Hard fail-closed execution loop.
+    Single-pass, fail-closed execution driver.
 
-    Mechanical invariants:
+    Mechanical guarantees:
+    - No looping
     - No retries
-    - No continuation after ambiguity
-    - Any failure poisons the system
-    - No side effects outside executor
+    - No OS termination primitives
+    - Poison is the only terminal mechanism
     """
 
     def __init__(self, executor, logger: Logger):
@@ -39,7 +38,7 @@ class LifeLoop:
         self._screen = ScreenAdapter()
         self._last_hash = ""
 
-    def run_experiment(self, action):
+    def run_experiment(self, action) -> dict:
         Poison.assert_clean()
 
         start_ts = time.monotonic()
@@ -52,8 +51,8 @@ class LifeLoop:
             # OBSERVE (pre)
             pre = self._screen.capture()
 
-            # EXECUTE (sole authority path)
-            _ = self._executor.execute(action)
+            # EXECUTE (sole authority)
+            self._executor.execute(action)
 
             # OBSERVE (post)
             post = self._screen.capture()
@@ -70,42 +69,35 @@ class LifeLoop:
                 post_ts=post.timestamp_monotonic,
             )
 
-            if not causality.get("attributed", False):
+            if causality.get("attributed") is not True:
                 raise Unverified(causality.get("reason", "causality_failed"))
 
             verdict = "VERIFIED"
 
-        except Unverified as e:
-            error = str(e)
-            Poison.trigger(f"unverified execution: {error}")
-
         except BaseException as e:
             error = repr(e)
-            Poison.trigger(f"life_loop exception: {error}")
+            Poison.trigger(f"life_loop failure: {error}")
 
-        finally:
-            record = {
-                "type": "experiment",
-                "verdict": verdict,
-                "error": error,
-                "duration": time.monotonic() - start_ts,
-            }
+        record = {
+            "type": "experiment",
+            "verdict": verdict,
+            "error": error,
+            "duration": time.monotonic() - start_ts,
+        }
 
-            record_hash = _hash_record(self._last_hash, record)
-            record["record_hash"] = record_hash
-            record["prev_hash"] = self._last_hash
-            self._last_hash = record_hash
+        record_hash = _hash_record(self._last_hash, record)
+        record["record_hash"] = record_hash
+        record["prev_hash"] = self._last_hash
+        self._last_hash = record_hash
 
-            try:
-                self._logger.record(record)
-                log_event(f"experiment.{verdict.lower()}")
-            except Exception as e:
-                # Logging failure is terminal
-                log_crash("logging failure", {"error": repr(e)})
-                os._exit(1)
+        try:
+            self._logger.record(record)
+            log_event(f"experiment.{verdict.lower()}")
+        except BaseException as e:
+            log_crash("logging failure", {"error": repr(e)})
+            Poison.trigger(f"logging failure: {repr(e)}")
 
-        # Mechanical backstop — should be unreachable
         if verdict != "VERIFIED":
-            os._exit(1)
+            Poison.trigger("non-verified execution reached return")
 
         return record
