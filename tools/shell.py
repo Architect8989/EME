@@ -6,10 +6,10 @@ class ShellDisabledError(RuntimeError):
     pass
 
 
-def run_shell(cmd: str):
+def run_shell(*_, **__):
     SystemState.assert_initialized()
     Poison.assert_clean()
     raise ShellDisabledError(
-        "tools.shell is disabled in this build. "
-        "Shell execution is not permitted outside the executor."
+        "Shell execution is disabled. "
+        "All OS effects must pass through the executor."
     )
