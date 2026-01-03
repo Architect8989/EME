@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from core.mode_gate import Mode
 from core.state_snapshot import StateSnapshot
 from execution.action_contract import ActionContract
-from execution.backend_contract import BackendBase, Result, ErrorCode
+from execution.backend_contract import BackendBase, Result
 
 
 def _precondition(snapshot: StateSnapshot) -> bool:
@@ -35,6 +35,9 @@ class MoveMouse1px:
     contract = MOVE_MOUSE_1PX_CONTRACT
 
     def _execute(self, backend: BackendBase) -> Result:
+        # Snapshot is executor-gated inside BackendBase
         snap = StateSnapshot.from_backend(backend)
         x, y = snap.cursor
-        return backend.move_mouse(x + 1, y)
+
+        # All OS effects go through backend with executor token
+        return backend.move_mouse(x + 1, y, _executor_token=backend._executor_token)
