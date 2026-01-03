@@ -1,35 +1,36 @@
 import sys
 
 from bootstrap.bootstrap import bootstrap
-from core.system_state import SystemState
 from core.logger import Logger
 from core.mode_gate import ModeGate, Mode
 from core.poison import Poison, PoisonError
 from execution.action_executor import ActionExecutor
 from execution.life_loop import LifeLoop
+from body.linux_backend import LinuxBackend
 
 
 def main():
-    # bootstrap must run first and only once
+    # ---- bootstrap: must be first, must succeed ----
     info = bootstrap()
 
-    # explicit initialization boundary
-    token = SystemState._issue_bootstrap_token()
-    SystemState.mark_initialized(token)
-
-    # logging becomes legal only after init
+    # ---- logging becomes legal only after bootstrap ----
     Logger.init()
 
-    # initial authority state
-    ModeGate.transition(Mode.PROBE)
+    # ---- initial authority state ----
+    ModeGate.arm(Mode.PROBE)
 
-    # executor owns backend and authority
-    executor = ActionExecutor(environment_hash=info["environment_hash"])
+    # ---- backend is created under initialized + guarded state ----
+    backend = LinuxBackend()
 
-    # life loop is the only long-running component
+    # ---- executor is the sole authority holder ----
+    executor = ActionExecutor(
+        backend=backend,
+        environment_hash=info["environment_hash"],
+    )
+
+    # ---- life loop is the only long-running component ----
     loop = LifeLoop(executor)
 
-    # example: probe-only startup loop
     loop.run()
 
 
