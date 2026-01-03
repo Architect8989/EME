@@ -7,6 +7,7 @@ import numpy as np
 from core.mode_gate import ModeGate, Mode
 from core.poison import Poison
 from execution.backend_contract import BackendBase
+from execution.action_executor import ExecutorToken
 
 
 MAX_PX_PER_SEC = 100
@@ -14,8 +15,14 @@ MOVE_STEP_PX = 1
 
 
 class LinuxBackend(BackendBase):
-    def __init__(self):
+    def __init__(self, token: ExecutorToken):
+        if not isinstance(token, ExecutorToken):
+            Poison.trigger("backend instantiated without executor token")
+
         super().__init__()
+        Poison.assert_clean()
+
+        self._token = token
         self._mss = mss.mss()
         self._screen = self._primary_monitor()
 
