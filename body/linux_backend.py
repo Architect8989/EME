@@ -1,8 +1,4 @@
-import subprocess
 from typing import Tuple
-
-import mss
-import numpy as np
 
 from core.mode_gate import ModeGate, Mode
 from core.poison import Poison
@@ -22,8 +18,17 @@ class LinuxBackend(BackendBase):
         super().__init__()
         Poison.assert_clean()
 
+        # ---- lazy OS / native imports (FIX 2) ----
+        import subprocess
+        import numpy as np
+        from mss import mss
+
+        self._subprocess = subprocess
+        self._np = np
+        self._mss_lib = mss
+
         self._token = token
-        self._mss = mss.mss()
+        self._mss = self._mss_lib()
         self._screen = self._primary_monitor()
 
     def _primary_monitor(self):
@@ -35,20 +40,20 @@ class LinuxBackend(BackendBase):
 
     def _run(self, cmd):
         Poison.assert_clean()
-        p = subprocess.run(
+        p = self._subprocess.run(
             cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stdout=self._subprocess.PIPE,
+            stderr=self._subprocess.PIPE,
             text=True,
         )
         if p.returncode != 0:
             Poison.trigger(f"command failed: {p.stderr.strip()}")
         return p.stdout.strip()
 
-    def _capture(self) -> np.ndarray:
+    def _capture(self):
         Poison.assert_clean()
         try:
-            frame = np.array(self._mss.grab(self._screen))
+            frame = self._np.array(self._mss.grab(self._screen))
         except Exception as e:
             Poison.trigger(f"screen capture failed: {e}")
 
@@ -107,7 +112,11 @@ class LinuxBackend(BackendBase):
         self._run(["xdotool", "mousemove", str(tx), str(ty)])
         after = self._capture()
 
-        delta = float(np.mean(np.abs(before.astype(np.int16) - after.astype(np.int16))))
+        delta = float(
+            self._np.mean(
+                self._np.abs(before.astype(self._np.int16) - after.astype(self._np.int16))
+            )
+        )
 
         if delta <= 0:
             Poison.trigger("mouse movement produced no visual delta")
