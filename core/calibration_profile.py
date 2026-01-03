@@ -36,40 +36,54 @@ class CalibrationManager:
     def __init__(self, backend: BackendBase, environment_hash: str):
         Poison.assert_clean()
         ModeGate.assert_allowed(require=Mode.CALIBRATE)
+
+        if not isinstance(backend, BackendBase):
+            Poison.trigger("Invalid backend for calibration")
+
         self._backend = backend
         self._env_hash = environment_hash
 
     def _discover_bounds(self) -> Tuple[int, int, int, int]:
         Poison.assert_clean()
+
         res = self._backend.screenshot()
         if not res.ok:
             Poison.trigger("Screenshot failed during calibration")
 
-        if "width" not in res.data or "height" not in res.data:
+        data = res.details
+        if "width" not in data or "height" not in data:
             Poison.trigger("Calibration screenshot missing resolution")
 
-        w = res.data["width"]
-        h = res.data["height"]
+        w = data["width"]
+        h = data["height"]
 
-        if w <= 0 or h <= 0:
+        if not isinstance(w, int) or not isinstance(h, int) or w <= 0 or h <= 0:
             Poison.trigger("Invalid resolution during calibration")
 
         return 0, 0, w - 1, h - 1
 
     def _measure_latency(self) -> Tuple[float, float]:
         Poison.assert_clean()
-        samples = []
+        samples: list[float] = []
 
         for _ in range(LATENCY_SAMPLES):
+            Poison.assert_clean()
+
             start = time.time()
-            res = self._backend.move_mouse_relative(0, 0)
+            res = self._backend.move_mouse(0, 0)
             if not res.ok:
                 Poison.trigger("Latency probe failed")
-            samples.append((time.time() - start) * 1000.0)
 
-        arr = np.array(samples)
-        if arr.size == 0:
+            elapsed_ms = (time.time() - start) * 1000.0
+            if elapsed_ms <= 0:
+                Poison.trigger("Invalid latency sample")
+
+            samples.append(elapsed_ms)
+
+        if not samples:
             Poison.trigger("No latency samples collected")
+
+        arr = np.array(samples, dtype=float)
 
         p50 = float(np.percentile(arr, 50))
         p95 = float(np.percentile(arr, 95))
@@ -103,6 +117,7 @@ class CalibrationManager:
 
     def _persist(self, profile: CalibrationProfile):
         Poison.assert_clean()
+
         raw = json.dumps(asdict(profile), sort_keys=True).encode()
         digest = hashlib.sha256(raw).hexdigest()
 
@@ -111,7 +126,10 @@ class CalibrationManager:
             "sha256": digest,
         }
 
-        CALIBRATION_PATH.write_text(json.dumps(payload, indent=2))
+        try:
+            CALIBRATION_PATH.write_text(json.dumps(payload, indent=2))
+        except Exception as e:
+            Poison.trigger(f"Failed to persist calibration: {e}")
 
 
 def load_calibration(environment_hash: str) -> CalibrationProfile:
@@ -120,16 +138,28 @@ def load_calibration(environment_hash: str) -> CalibrationProfile:
     if not CALIBRATION_PATH.exists():
         Poison.trigger("Calibration profile missing")
 
-    payload = json.loads(CALIBRATION_PATH.read_text())
+    try:
+        payload = json.loads(CALIBRATION_PATH.read_text())
+    except Exception as e:
+        Poison.trigger(f"Failed to read calibration profile: {e}")
+
+    if not isinstance(payload, dict):
+        Poison.trigger("Malformed calibration payload")
 
     if "profile" not in payload or "sha256" not in payload:
-        Poison.trigger("Malformed calibration profile")
+        Poison.trigger("Malformed calibration structure")
 
-    profile = CalibrationProfile(**payload["profile"])
+    profile_data = payload["profile"]
+    expected_hash = payload["sha256"]
 
-    raw = json.dumps(payload["profile"], sort_keys=True).encode()
-    if hashlib.sha256(raw).hexdigest() != payload["sha256"]:
+    raw = json.dumps(profile_data, sort_keys=True).encode()
+    if hashlib.sha256(raw).hexdigest() != expected_hash:
         Poison.trigger("Calibration profile tampered")
+
+    try:
+        profile = CalibrationProfile(**profile_data)
+    except Exception as e:
+        Poison.trigger(f"Invalid calibration fields: {e}")
 
     if profile.fingerprint_hash != environment_hash:
         Poison.trigger("Calibration environment mismatch")
