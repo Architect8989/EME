@@ -49,6 +49,9 @@ class ScreenAdapter:
     - No backend coupling
     """
 
+    _BYTES_PER_PIXEL = 4
+    _ALLOWED_PIXEL_FORMAT = "BGRA"
+
     def __init__(self) -> None:
         SystemState.assert_initialized()
         Poison.assert_clean()
@@ -75,6 +78,9 @@ class ScreenAdapter:
         Poison.assert_clean()
         ModeGate.assert_allowed(require=Mode.PROBE)
 
+        # ─────────────────────────────
+        # Hard validation (fail-closed)
+        # ─────────────────────────────
         if not isinstance(buffer, (bytes, bytearray)) or not buffer:
             Poison.trigger("invalid screen buffer")
 
@@ -84,9 +90,17 @@ class ScreenAdapter:
         if width <= 0 or height <= 0:
             Poison.trigger("non-positive frame dimensions")
 
-        if not isinstance(pixel_format, str) or not pixel_format:
-            Poison.trigger("invalid pixel format")
+        if pixel_format != self._ALLOWED_PIXEL_FORMAT:
+            Poison.trigger("unsupported pixel format")
 
+        expected_len = width * height * self._BYTES_PER_PIXEL
+
+        if len(buffer) != expected_len:
+            Poison.trigger("buffer length does not match dimensions")
+
+        # ─────────────────────────────
+        # Temporal + perceptual continuity
+        # ─────────────────────────────
         with self._lock:
             ts = time.monotonic()
             if ts <= self._last_timestamp:
