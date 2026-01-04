@@ -27,7 +27,13 @@ class Result:
 
     @staticmethod
     def ok_result(started_at_ns: int, finished_at_ns: int, **details: Any) -> "Result":
-        return Result(True, ErrorCode.OK, details, started_at_ns, finished_at_ns)
+        return Result(
+            ok=True,
+            error_code=ErrorCode.OK,
+            details=details,
+            started_at_ns=started_at_ns,
+            finished_at_ns=finished_at_ns,
+        )
 
     @staticmethod
     def err_result(
@@ -36,7 +42,13 @@ class Result:
         finished_at_ns: int,
         **details: Any,
     ) -> "Result":
-        return Result(False, error_code, details, started_at_ns, finished_at_ns)
+        return Result(
+            ok=False,
+            error_code=error_code,
+            details=details,
+            started_at_ns=started_at_ns,
+            finished_at_ns=finished_at_ns,
+        )
 
 
 class BackendContract(Protocol):
@@ -47,12 +59,26 @@ class BackendContract(Protocol):
 
 
 class BackendBase(BackendContract, abc.ABC):
+    """
+    Executor-monopoly backend base.
+
+    Mechanical guarantees:
+    - Requires completed bootstrap
+    - Requires clean (non-poisoned) state
+    - Executor token is single-bind
+    - Any misuse poisons immediately
+    """
+
     __slots__ = ("_executor_token",)
 
     def __init__(self):
         SystemState.assert_initialized()
         Poison.assert_clean()
         self._executor_token: Optional[Any] = None
+
+    # ─────────────────────────────────────────────
+    # Executor binding (single-use)
+    # ─────────────────────────────────────────────
 
     def _bind_executor(self, token: Any) -> None:
         SystemState.assert_initialized()
@@ -75,6 +101,10 @@ class BackendBase(BackendContract, abc.ABC):
 
     def _guard(self, token: Any) -> None:
         self._assert_executor(token)
+
+    # ─────────────────────────────────────────────
+    # Executor-only public API
+    # ─────────────────────────────────────────────
 
     def screenshot(self, *, _executor_token: Any) -> Result:
         self._guard(_executor_token)
@@ -115,8 +145,11 @@ class BackendBase(BackendContract, abc.ABC):
         self._guard(_executor_token)
         started = time.time_ns()
 
-        if button not in ("left", "right", "middle") or not isinstance(count, int) or count <= 0:
-            Poison.trigger("invalid click arguments")
+        if button not in ("left", "right", "middle"):
+            Poison.trigger("invalid click button")
+
+        if not isinstance(count, int) or count <= 0:
+            Poison.trigger("invalid click count")
 
         try:
             payload = self._impl_click(button, count)
@@ -148,6 +181,10 @@ class BackendBase(BackendContract, abc.ABC):
             Poison.trigger("backend type_text returned invalid payload")
 
         return Result.ok_result(started, finished, **(payload or {}))
+
+    # ─────────────────────────────────────────────
+    # Backend-specific implementations
+    # ─────────────────────────────────────────────
 
     @abc.abstractmethod
     def _impl_screenshot(self) -> dict:
