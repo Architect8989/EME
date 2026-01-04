@@ -12,7 +12,7 @@ def compute_delta(
     height: int,
 ) -> Dict[str, Any]:
     # ─────────────────────────────
-    # Hard validation
+    # Hard validation (fail-closed)
     # ─────────────────────────────
     if not isinstance(pre_buffer, (bytes, bytearray)):
         Poison.trigger("invalid pre_buffer")
@@ -32,40 +32,40 @@ def compute_delta(
     if len(pre_buffer) == 0:
         Poison.trigger("empty buffers")
 
-    # ─────────────────────────────
-    # Checksums (deterministic)
-    # ─────────────────────────────
-    pre_checksum = hashlib.sha256(pre_buffer).hexdigest()
-    post_checksum = hashlib.sha256(post_buffer).hexdigest()
-
-    # ─────────────────────────────
-    # Pixel delta (byte-wise)
-    # BGRA = 4 bytes per pixel
-    # ─────────────────────────────
+    # BGRA invariant: 4 bytes per pixel
     if len(pre_buffer) % 4 != 0:
         Poison.trigger("buffer not aligned to 4 bytes per pixel")
 
-    pixels_total = (width * height)
+    pixels_total = width * height
     expected_len = pixels_total * 4
 
     if len(pre_buffer) != expected_len:
         Poison.trigger("buffer length does not match dimensions")
 
-    changed_pixels = 0
+    # ─────────────────────────────
+    # Deterministic checksums
+    # ─────────────────────────────
+    pre_checksum = hashlib.sha256(pre_buffer).hexdigest()
+    post_checksum = hashlib.sha256(post_buffer).hexdigest()
+
+    # ─────────────────────────────
+    # Pixel-wise delta (strict)
+    # ─────────────────────────────
+    pixels_changed = 0
 
     for i in range(0, expected_len, 4):
         if pre_buffer[i:i + 4] != post_buffer[i:i + 4]:
-            changed_pixels += 1
+            pixels_changed += 1
 
-    percent_changed = changed_pixels / pixels_total
+    percent_changed = pixels_changed / pixels_total
 
     # ─────────────────────────────
-    # Deterministic result
+    # Deterministic output
     # ─────────────────────────────
     return {
         "pre_checksum": pre_checksum,
         "post_checksum": post_checksum,
         "pixels_total": pixels_total,
-        "pixels_changed": changed_pixels,
+        "pixels_changed": pixels_changed,
         "percent_changed": percent_changed,
-    }
+                       }
