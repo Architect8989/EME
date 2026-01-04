@@ -2,10 +2,10 @@ import time
 import hashlib
 
 from core.poison import Poison
-from core.logger import Logger, log_event, log_crash
+from core.logger import log_event, log_crash
 from perception.screen_adapter import ScreenAdapter
-from core.delta import Delta
 from evaluation.causality import evaluate_causality
+from perception.diff import compute_delta
 
 
 class Unverified(Exception):
@@ -22,19 +22,19 @@ def _hash_record(prev_hash: str, record: dict) -> str:
 
 class LifeLoop:
     """
-    Single-pass, fail-closed execution driver.
+    Single-pass execution verifier.
 
     Mechanical guarantees:
-    - No looping
+    - Exactly one action
+    - Exactly two observations
     - No retries
-    - No OS termination primitives
-    - Poison is the only terminal mechanism
+    - No loops
+    - Any ambiguity poisons immediately
     """
 
-    def __init__(self, executor, logger: Logger):
+    def __init__(self, executor):
         Poison.assert_clean()
         self._executor = executor
-        self._logger = logger
         self._screen = ScreenAdapter()
         self._last_hash = ""
 
@@ -48,22 +48,57 @@ class LifeLoop:
         try:
             log_event("experiment.begin")
 
-            # OBSERVE (pre)
-            pre = self._screen.capture()
+            # ───────────────
+            # OBSERVE (PRE)
+            # ───────────────
+            pre_res = self._executor.backend.screenshot(
+                _executor_token=self._executor.token
+            )
 
-            # EXECUTE (sole authority)
+            if not pre_res.ok:
+                Poison.trigger("pre-screenshot failed")
+
+            pre = self._screen.ingest(
+                buffer=pre_res.details["buffer"],
+                width=pre_res.details["width"],
+                height=pre_res.details["height"],
+                pixel_format=pre_res.details["pixel_format"],
+            )
+
+            # ───────────────
+            # EXECUTE ACTION
+            # ───────────────
             self._executor.execute(action)
 
-            # OBSERVE (post)
-            post = self._screen.capture()
+            # ───────────────
+            # OBSERVE (POST)
+            # ───────────────
+            post_res = self._executor.backend.screenshot(
+                _executor_token=self._executor.token
+            )
 
+            if not post_res.ok:
+                Poison.trigger("post-screenshot failed")
+
+            post = self._screen.ingest(
+                buffer=post_res.details["buffer"],
+                width=post_res.details["width"],
+                height=post_res.details["height"],
+                pixel_format=post_res.details["pixel_format"],
+            )
+
+            # ───────────────
             # DIFF
-            diff = self._screen.diff(pre, post)
-            delta = Delta(diff)
+            # ───────────────
+            delta = compute_delta(pre, post)
+            if delta.get("error") is not None:
+                Poison.trigger(f"delta failure: {delta['error']}")
 
-            # CAUSALITY (boolean, fail-closed)
+            # ───────────────
+            # CAUSALITY
+            # ───────────────
             causality = evaluate_causality(
-                delta=delta.to_dict(),
+                delta=delta,
                 time_window=(start_ts, time.monotonic()),
                 pre_ts=pre.timestamp_monotonic,
                 post_ts=post.timestamp_monotonic,
@@ -91,7 +126,6 @@ class LifeLoop:
         self._last_hash = record_hash
 
         try:
-            self._logger.record(record)
             log_event(f"experiment.{verdict.lower()}")
         except BaseException as e:
             log_crash("logging failure", {"error": repr(e)})
