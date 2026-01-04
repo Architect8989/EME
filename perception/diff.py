@@ -1,99 +1,63 @@
 import hashlib
-from pathlib import Path
-from typing import Dict, Any, Tuple, Optional
+from typing import Dict, Any, Optional, Tuple
+
+import numpy as np
 
 from core.poison import Poison
+from perception.screen_adapter import Frame
 
 
-def _checksum(path: Path) -> str:
-    if not isinstance(path, Path):
-        Poison.trigger("checksum path invalid")
-
+def _hash_bytes(data: bytes) -> str:
     h = hashlib.sha256()
-    try:
-        with open(path, "rb") as f:
-            for chunk in iter(lambda: f.read(8192), b""):
-                h.update(chunk)
-    except BaseException as e:
-        Poison.trigger(f"checksum read failed: {repr(e)}")
-
+    h.update(data)
     return h.hexdigest()
 
 
-def _bbox_from_diff(diff_img) -> Optional[Tuple[int, int, int, int]]:
-    try:
-        return diff_img.getbbox()
-    except BaseException as e:
-        Poison.trigger(f"bbox computation failed: {repr(e)}")
-
-
-def compute_delta(pre_path: Path, post_path: Path) -> Dict[str, Any]:
+def compute_delta(pre: Frame, post: Frame) -> Dict[str, Any]:
     """
-    Deterministic visual delta computation.
+    Deterministic, in-memory visual delta.
 
     Mechanical guarantees:
+    - No filesystem access
+    - No OS interaction
     - No retries
-    - No heuristics
-    - Any malformed input poisons immediately
-    - Output structure is stable for identical inputs
+    - Any ambiguity poisons immediately
     """
 
-    if not isinstance(pre_path, Path) or not isinstance(post_path, Path):
-        Poison.trigger("invalid delta path arguments")
+    if not isinstance(pre, Frame) or not isinstance(post, Frame):
+        Poison.trigger("delta requires Frame inputs")
 
-    if not pre_path.exists() or not post_path.exists():
-        Poison.trigger("delta paths do not exist")
-
-    try:
-        from PIL import Image, ImageChops
-        import numpy as np
-    except BaseException as e:
-        Poison.trigger(f"delta import failed: {repr(e)}")
-
-    try:
-        pre = Image.open(pre_path).convert("L")
-        post = Image.open(post_path).convert("L")
-    except BaseException as e:
-        Poison.trigger(f"image load failed: {repr(e)}")
-
-    pre_checksum = _checksum(pre_path)
-    post_checksum = _checksum(post_path)
-
-    if pre.size != post.size:
-        total = int(pre.size[0] * pre.size[1])
+    if pre.width != post.width or pre.height != post.height:
+        total = pre.width * pre.height
         return {
-            "pre_checksum": pre_checksum,
-            "post_checksum": post_checksum,
+            "pre_checksum": pre.checksum,
+            "post_checksum": post.checksum,
             "pixels_total": total,
             "pixels_changed": total,
             "percent_changed": 1.0,
-            "bbox": [0, 0, pre.size[0], pre.size[1]],
+            "bbox": [0, 0, pre.width, pre.height],
         }
 
     try:
-        diff = ImageChops.difference(pre, post)
+        a = np.frombuffer(pre.buffer, dtype=np.uint8)
+        b = np.frombuffer(post.buffer, dtype=np.uint8)
     except BaseException as e:
-        Poison.trigger(f"image diff failed: {repr(e)}")
+        Poison.trigger(f"buffer decode failed: {repr(e)}")
 
-    diff_arr = np.asarray(diff)
-    if diff_arr.size <= 0:
-        Poison.trigger("empty diff array")
+    if a.size != b.size or a.size == 0:
+        Poison.trigger("invalid frame buffer sizes")
 
-    pixels_total = int(diff_arr.size)
-    pixels_changed = int((diff_arr != 0).sum())
-
-    if pixels_total <= 0:
-        Poison.trigger("invalid pixel count")
+    diff = a != b
+    pixels_total = int(diff.size)
+    pixels_changed = int(diff.sum())
 
     percent_changed = pixels_changed / pixels_total
 
-    bbox = _bbox_from_diff(diff)
-
     return {
-        "pre_checksum": pre_checksum,
-        "post_checksum": post_checksum,
+        "pre_checksum": pre.checksum,
+        "post_checksum": post.checksum,
         "pixels_total": pixels_total,
         "pixels_changed": pixels_changed,
         "percent_changed": percent_changed,
-        "bbox": list(bbox) if bbox else None,
-        }
+        "bbox": None,  # bbox intentionally omitted (no heuristics)
+    }
