@@ -11,16 +11,26 @@ MOVE_STEP_PX = 1
 
 class LinuxBackend(BackendBase):
     """
-    Linux X11 backend.
+    Linux X11 live backend (GII body).
+
+    Responsibilities:
+    - Screen capture (eyes)
+    - Cursor sensing (proprioception)
+    - Mouse input (hands)
 
     Mechanical guarantees:
     - No OS interaction at import time
     - No OS interaction in __init__
     - Executor token bound exactly once
-    - All OS effects occur only inside _impl_* methods
+    - All OS effects gated by:
+        - executor token
+        - poison
+        - mode gate
+    - No retries
+    - Fail-closed on any anomaly
     """
 
-    __slots__ = ("_np", "_mss_lib", "_subprocess")
+    __slots__ = ("_np", "_mss", "_subprocess")
 
     def __init__(self, token: ExecutorToken):
         if not isinstance(token, ExecutorToken):
@@ -30,43 +40,52 @@ class LinuxBackend(BackendBase):
         self._bind_executor(token)
 
         self._np = None
-        self._mss_lib = None
+        self._mss = None
         self._subprocess = None
 
     # ─────────────────────────────────────────────
-    # Lazy OS helpers (executor-gated via callers)
+    # Lazy OS bindings (executed only under authority)
     # ─────────────────────────────────────────────
 
     def _ensure_libs(self) -> None:
-        if self._np is None:
-            try:
-                import numpy as np
-                from mss import mss
-                import subprocess
-            except BaseException as e:
-                Poison.trigger(f"backend dependency import failed: {repr(e)}")
+        if self._np is not None:
+            return
 
-            self._np = np
-            self._mss_lib = mss
-            self._subprocess = subprocess
+        try:
+            import numpy as np
+            from mss import mss
+            import subprocess
+        except BaseException as e:
+            Poison.trigger(f"backend dependency import failed: {repr(e)}")
+
+        self._np = np
+        self._mss = mss
+        self._subprocess = subprocess
+
+    # ─────────────────────────────────────────────
+    # Low-level OS primitives
+    # ─────────────────────────────────────────────
 
     def _primary_monitor(self):
         self._ensure_libs()
-        with self._mss_lib() as sct:
+        with self._mss() as sct:
             monitors = sct.monitors
             if not monitors or len(monitors) < 2:
                 Poison.trigger("primary monitor not found")
             return monitors[1]
 
-    def _grab(self):
+    def _capture(self):
         self._ensure_libs()
         mon = self._primary_monitor()
-        with self._mss_lib() as sct:
+
+        with self._mss() as sct:
             img = sct.grab(mon)
-            data = img.bgra if hasattr(img, "bgra") else img.raw
-            if len(data) != img.width * img.height * 4:
+            buf = img.bgra if hasattr(img, "bgra") else img.raw
+
+            if len(buf) != img.width * img.height * 4:
                 Poison.trigger("screen buffer size mismatch")
-            return data, img.width, img.height
+
+            return buf, img.width, img.height
 
     def _run(self, cmd):
         self._ensure_libs()
@@ -76,33 +95,38 @@ class LinuxBackend(BackendBase):
             stderr=self._subprocess.PIPE,
             text=True,
         )
+
         if p.returncode != 0:
             Poison.trigger(f"command failed: {p.stderr.strip()}")
+
         return p.stdout.strip()
 
     def _cursor(self) -> Tuple[int, int]:
         out = self._run(["xdotool", "getmouselocation", "--shell"])
         vals = {}
+
         for line in out.splitlines():
             if "=" in line:
                 k, v = line.split("=", 1)
                 vals[k] = int(v)
+
         if "X" not in vals or "Y" not in vals:
             Poison.trigger("cursor position unavailable")
+
         return vals["X"], vals["Y"]
 
     def _clamp(self, x: int, y: int, w: int, h: int) -> Tuple[int, int]:
         return max(0, min(x, w - 1)), max(0, min(y, h - 1))
 
     # ─────────────────────────────────────────────
-    # BackendBase implementations
+    # BackendBase implementations (executor-only)
     # ─────────────────────────────────────────────
 
     def _impl_screenshot(self) -> dict:
         Poison.assert_clean()
         ModeGate.assert_allowed(require=Mode.PROBE)
 
-        buffer, width, height = self._grab()
+        buffer, width, height = self._capture()
         cx, cy = self._cursor()
 
         return {
@@ -117,7 +141,7 @@ class LinuxBackend(BackendBase):
         Poison.assert_clean()
         ModeGate.assert_allowed(require=Mode.EXECUTE)
 
-        buffer, width, height = self._grab()
+        buffer, width, height = self._capture()
         cx, cy = self._cursor()
         tx, ty = self._clamp(x, y, width, height)
 
