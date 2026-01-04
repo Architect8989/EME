@@ -1,37 +1,38 @@
-import hashlib
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 
 from core.poison import Poison
 
 
-class EnvironmentMismatch(RuntimeError):
-    pass
-
-
 @dataclass(frozen=True)
 class EnvironmentFingerprint:
+    """
+    Deterministic, constant environment fingerprint.
+    """
     fingerprint_hash: str
 
 
 class EnvironmentContract:
     """
-    Deterministic environment gate.
+    Frozen-environment contract.
 
     Mechanical guarantees:
     - No OS inspection
     - No platform probing
     - No subprocess usage
-    - No conditional platform support
-    - Single immutable fingerprint input
+    - No conditional behavior
+    - Deterministic, non-failing verification
     """
+
+    _FROZEN_FINGERPRINT = EnvironmentFingerprint(
+        fingerprint_hash="FROZEN_ENVIRONMENT"
+    )
 
     @classmethod
     def verify(cls) -> EnvironmentFingerprint:
-        """
-        Environment verification is forbidden in a frozen artifact.
-        """
-        Poison.trigger("environment verification is not permitted in this build")
+        Poison.assert_clean()
+        return cls._FROZEN_FINGERPRINT
 
     @staticmethod
-    def fingerprint_hash(_: EnvironmentFingerprint) -> str:
-        Poison.trigger("environment fingerprinting is not permitted in this build")
+    def fingerprint_hash(fp: EnvironmentFingerprint) -> str:
+        Poison.assert_clean()
+        return fp.fingerprint_hash
