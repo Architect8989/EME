@@ -4,17 +4,28 @@ from core.poison import Poison
 
 
 def evaluate_causality(
+    *,
     delta: Dict[str, Any],
     time_window: Tuple[float, float],
     pre_ts: float,
     post_ts: float,
     max_expected_change: float = 0.25,
 ) -> Dict[str, Any]:
-    if not isinstance(time_window, tuple) or len(time_window) != 2:
-        Poison.trigger("invalid time_window")
+    """
+    Deterministic causality gate.
+
+    Mechanical guarantees:
+    - Never guesses
+    - Never retries
+    - Any malformed input poisons immediately
+    - Only explicit, bounded attribution passes
+    """
 
     if not isinstance(delta, dict):
         Poison.trigger("invalid delta")
+
+    if not isinstance(time_window, tuple) or len(time_window) != 2:
+        Poison.trigger("invalid time_window")
 
     if not isinstance(pre_ts, (int, float)) or not isinstance(post_ts, (int, float)):
         Poison.trigger("invalid timestamps")
@@ -23,6 +34,9 @@ def evaluate_causality(
 
     if not isinstance(action_start, (int, float)) or not isinstance(action_end, (int, float)):
         Poison.trigger("invalid time_window bounds")
+
+    if action_start > action_end:
+        Poison.trigger("inverted time_window")
 
     pixels_changed = delta.get("pixels_changed")
     percent_changed = delta.get("percent_changed")
@@ -63,4 +77,4 @@ def evaluate_causality(
     return {
         "attributed": True,
         "reason": "within_window",
-    }
+        }
