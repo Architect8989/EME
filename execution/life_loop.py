@@ -3,9 +3,9 @@ import hashlib
 
 from core.poison import Poison
 from core.logger import log_event, log_crash
-from perception.screen_adapter import ScreenAdapter
+from perception.screen_adapter import ScreenAdapter, Frame
 from evaluation.causality import evaluate_causality
-from perception.diff import compute_delta
+from perception.delta import compute_delta
 
 
 class Unverified(Exception):
@@ -32,6 +32,8 @@ class LifeLoop:
     - Any ambiguity poisons immediately
     """
 
+    __slots__ = ("_executor", "_screen", "_last_hash")
+
     def __init__(self, executor):
         Poison.assert_clean()
         self._executor = executor
@@ -48,9 +50,9 @@ class LifeLoop:
         try:
             log_event("experiment.begin")
 
-            # ───────────────
+            # ──────────────────
             # OBSERVE (PRE)
-            # ───────────────
+            # ──────────────────
             pre_res = self._executor.backend.screenshot(
                 _executor_token=self._executor.token
             )
@@ -58,21 +60,21 @@ class LifeLoop:
             if not pre_res.ok:
                 Poison.trigger("pre-screenshot failed")
 
-            pre = self._screen.ingest(
+            pre: Frame = self._screen.ingest(
                 buffer=pre_res.details["buffer"],
                 width=pre_res.details["width"],
                 height=pre_res.details["height"],
                 pixel_format=pre_res.details["pixel_format"],
             )
 
-            # ───────────────
-            # EXECUTE ACTION
-            # ───────────────
+            # ──────────────────
+            # EXECUTE (SOLE AUTHORITY)
+            # ──────────────────
             self._executor.execute(action)
 
-            # ───────────────
+            # ──────────────────
             # OBSERVE (POST)
-            # ───────────────
+            # ──────────────────
             post_res = self._executor.backend.screenshot(
                 _executor_token=self._executor.token
             )
@@ -80,23 +82,26 @@ class LifeLoop:
             if not post_res.ok:
                 Poison.trigger("post-screenshot failed")
 
-            post = self._screen.ingest(
+            post: Frame = self._screen.ingest(
                 buffer=post_res.details["buffer"],
                 width=post_res.details["width"],
                 height=post_res.details["height"],
                 pixel_format=post_res.details["pixel_format"],
             )
 
-            # ───────────────
-            # DIFF
-            # ───────────────
-            delta = compute_delta(pre, post)
-            if delta.get("error") is not None:
-                Poison.trigger(f"delta failure: {delta['error']}")
+            # ──────────────────
+            # DELTA (DETERMINISTIC)
+            # ──────────────────
+            delta = compute_delta(
+                pre_buffer=pre.buffer,
+                post_buffer=post.buffer,
+                width=pre.width,
+                height=pre.height,
+            )
 
-            # ───────────────
-            # CAUSALITY
-            # ───────────────
+            # ──────────────────
+            # CAUSALITY (FAIL-CLOSED)
+            # ──────────────────
             causality = evaluate_causality(
                 delta=delta,
                 time_window=(start_ts, time.monotonic()),
