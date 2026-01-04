@@ -1,7 +1,7 @@
 import threading
 
 
-class SystemStateError(Exception):
+class SystemStateError(RuntimeError):
     pass
 
 
@@ -35,11 +35,13 @@ class SystemState:
     def begin_bootstrap(cls) -> _BootstrapToken:
         with cls._lock:
             if cls._poisoned:
-                raise SystemStateError("System poisoned")
+                raise SystemStateError("system poisoned")
+
             if cls._initialized:
-                raise SystemStateError("System already initialized")
+                raise SystemStateError("system already initialized")
+
             if cls._token is not None:
-                raise SystemStateError("Bootstrap already in progress")
+                raise SystemStateError("bootstrap already in progress")
 
             cls._token = _BootstrapToken()
             return cls._token
@@ -48,19 +50,21 @@ class SystemState:
     def mark_initialized(cls, token: _BootstrapToken) -> None:
         if not isinstance(token, _BootstrapToken):
             cls._poison_locked()
-            raise SystemStateError("Invalid bootstrap token")
+            raise SystemStateError("invalid bootstrap token")
 
         with cls._lock:
             if cls._poisoned:
-                raise SystemStateError("System poisoned")
+                raise SystemStateError("system poisoned")
+
             if cls._initialized:
-                raise SystemStateError("System already initialized")
+                raise SystemStateError("system already initialized")
+
             if token is not cls._token:
                 cls._poison_locked()
-                raise SystemStateError("Bootstrap token mismatch")
+                raise SystemStateError("bootstrap token mismatch")
 
             cls._initialized = True
-            cls._token = None  # token is irreversibly consumed
+            cls._token = None
 
     # ─────────────────────────────────────────────
     # Poisoning (terminal, irreversible)
@@ -84,12 +88,13 @@ class SystemState:
     def assert_initialized(cls) -> None:
         with cls._lock:
             if cls._poisoned:
-                raise SystemStateError("System poisoned")
+                raise SystemStateError("system poisoned")
+
             if not cls._initialized:
-                raise SystemStateError("System not initialized")
+                raise SystemStateError("system not initialized")
 
     @classmethod
     def assert_alive(cls) -> None:
         with cls._lock:
             if cls._poisoned:
-                raise SystemStateError("System poisoned")
+                raise SystemStateError("system poisoned")
