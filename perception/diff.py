@@ -6,6 +6,9 @@ from core.poison import Poison
 
 
 def _checksum(path: Path) -> str:
+    if not isinstance(path, Path):
+        Poison.trigger("checksum path invalid")
+
     h = hashlib.sha256()
     try:
         with open(path, "rb") as f:
@@ -13,6 +16,7 @@ def _checksum(path: Path) -> str:
                 h.update(chunk)
     except BaseException as e:
         Poison.trigger(f"checksum read failed: {repr(e)}")
+
     return h.hexdigest()
 
 
@@ -24,8 +28,18 @@ def _bbox_from_diff(diff_img) -> Optional[Tuple[int, int, int, int]]:
 
 
 def compute_delta(pre_path: Path, post_path: Path) -> Dict[str, Any]:
+    """
+    Deterministic visual delta computation.
+
+    Mechanical guarantees:
+    - No retries
+    - No heuristics
+    - Any malformed input poisons immediately
+    - Output structure is stable for identical inputs
+    """
+
     if not isinstance(pre_path, Path) or not isinstance(post_path, Path):
-        Poison.trigger("invalid path arguments")
+        Poison.trigger("invalid delta path arguments")
 
     if not pre_path.exists() or not post_path.exists():
         Poison.trigger("delta paths do not exist")
@@ -34,7 +48,7 @@ def compute_delta(pre_path: Path, post_path: Path) -> Dict[str, Any]:
         from PIL import Image, ImageChops
         import numpy as np
     except BaseException as e:
-        Poison.trigger(f"diff import failed: {repr(e)}")
+        Poison.trigger(f"delta import failed: {repr(e)}")
 
     try:
         pre = Image.open(pre_path).convert("L")
@@ -46,7 +60,7 @@ def compute_delta(pre_path: Path, post_path: Path) -> Dict[str, Any]:
     post_checksum = _checksum(post_path)
 
     if pre.size != post.size:
-        total = pre.size[0] * pre.size[1]
+        total = int(pre.size[0] * pre.size[1])
         return {
             "pre_checksum": pre_checksum,
             "post_checksum": post_checksum,
@@ -62,11 +76,16 @@ def compute_delta(pre_path: Path, post_path: Path) -> Dict[str, Any]:
         Poison.trigger(f"image diff failed: {repr(e)}")
 
     diff_arr = np.asarray(diff)
-    if diff_arr.size == 0:
+    if diff_arr.size <= 0:
         Poison.trigger("empty diff array")
 
     pixels_total = int(diff_arr.size)
     pixels_changed = int((diff_arr != 0).sum())
+
+    if pixels_total <= 0:
+        Poison.trigger("invalid pixel count")
+
+    percent_changed = pixels_changed / pixels_total
 
     bbox = _bbox_from_diff(diff)
 
@@ -75,6 +94,6 @@ def compute_delta(pre_path: Path, post_path: Path) -> Dict[str, Any]:
         "post_checksum": post_checksum,
         "pixels_total": pixels_total,
         "pixels_changed": pixels_changed,
-        "percent_changed": pixels_changed / pixels_total,
+        "percent_changed": percent_changed,
         "bbox": list(bbox) if bbox else None,
-    }
+        }
