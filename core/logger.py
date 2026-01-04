@@ -27,8 +27,8 @@ class Logger:
             Poison.trigger("logger reinitialization attempted")
 
         try:
-            LOG_DIR.mkdir(exist_ok=True)
-            CRASH_DIR.mkdir(exist_ok=True)
+            LOG_DIR.mkdir(parents=True, exist_ok=True)
+            CRASH_DIR.mkdir(parents=True, exist_ok=True)
         except BaseException as e:
             Poison.trigger(f"logger init failed: {repr(e)}")
 
@@ -45,13 +45,13 @@ class Logger:
         Poison.assert_clean()
         cls._assert_initialized()
 
-        record = dict(record)
-        record["monotonic_ts"] = time.monotonic()
-        record["wall_ts"] = time.time()
-        record["run_id"] = cls._run_id
+        payload = dict(record)
+        payload["monotonic_ts"] = time.monotonic()
+        payload["wall_ts"] = time.time()
+        payload["run_id"] = cls._run_id
 
         try:
-            line = json.dumps(record, separators=(",", ":"), sort_keys=True)
+            line = json.dumps(payload, separators=(",", ":"), sort_keys=True)
         except BaseException as e:
             Poison.trigger(f"logger serialization failed: {repr(e)}")
 
