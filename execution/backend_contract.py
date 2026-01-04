@@ -62,22 +62,22 @@ class BackendBase(BackendContract, abc.ABC):
     """
     Executor-monopoly backend base.
 
-    Mechanical guarantees:
+    Mechanical invariants:
     - Requires completed bootstrap
-    - Requires clean (non-poisoned) state
-    - Executor token is single-bind
-    - Any misuse poisons immediately
+    - Requires clean poison state
+    - Executor token is single-bind and identity-checked
+    - Any misuse is terminal
     """
 
     __slots__ = ("_executor_token",)
 
-    def __init__(self):
+    def __init__(self) -> None:
         SystemState.assert_initialized()
         Poison.assert_clean()
         self._executor_token: Optional[Any] = None
 
     # ─────────────────────────────────────────────
-    # Executor binding (single-use)
+    # Executor binding (single-use, irreversible)
     # ─────────────────────────────────────────────
 
     def _bind_executor(self, token: Any) -> None:
@@ -183,7 +183,7 @@ class BackendBase(BackendContract, abc.ABC):
         return Result.ok_result(started, finished, **(payload or {}))
 
     # ─────────────────────────────────────────────
-    # Backend-specific implementations
+    # Backend-specific implementations (OS-touching)
     # ─────────────────────────────────────────────
 
     @abc.abstractmethod
