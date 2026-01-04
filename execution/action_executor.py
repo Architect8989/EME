@@ -4,7 +4,7 @@ from typing import Any
 from core.mode_gate import ModeGate
 from core.poison import Poison
 from core.refusal_engine import RefusalEngine, RefusalReason
-from core.calibration_profile import load_calibration, CalibrationError
+from core.calibration_profile import load_calibration
 from core.system_state import SystemState
 from execution.backend_contract import Result
 from core.logger import log_event
@@ -23,22 +23,22 @@ class ActionExecutor:
 
     Mechanical invariants:
     - Requires completed bootstrap
-    - Single executor token
-    - No backend access leakage
-    - Fail-closed on any ambiguity
+    - Exactly one executor token
+    - Backend never exposed outside executor
+    - Any ambiguity is terminal
     """
 
     __slots__ = ("_token", "_backend", "_env_hash", "_calibration")
 
     def __init__(self, *, environment_hash: str):
-        # ---- hard guards ----
         SystemState.assert_initialized()
         Poison.assert_clean()
 
-        # ---- executor authority ----
+        if not isinstance(environment_hash, str) or not environment_hash:
+            Poison.trigger("invalid environment hash")
+
         token = ExecutorToken()
 
-        # ---- deterministic backend binding ----
         try:
             from body.linux_backend import LinuxBackend
         except BaseException as e:
@@ -50,16 +50,28 @@ class ActionExecutor:
         self._backend = backend
         self._env_hash = environment_hash
 
-        # ---- calibration is mandatory and terminal ----
         try:
             self._calibration = load_calibration(environment_hash)
-        except CalibrationError as e:
-            Poison.trigger(f"calibration invalid: {str(e)}")
+        except BaseException as e:
+            Poison.trigger(f"calibration invalid: {repr(e)}")
+
+    @property
+    def backend(self):
+        return self._backend
+
+    @property
+    def token(self):
+        return self._token
 
     def execute(self, action: Any) -> Result:
-        # ---- global invariants ----
         SystemState.assert_initialized()
         Poison.assert_clean()
+
+        if action is None:
+            RefusalEngine.kill(
+                RefusalReason.INTERNAL_ERROR,
+                "null action",
+            )
 
         if not hasattr(action, "contract"):
             RefusalEngine.kill(
@@ -69,7 +81,12 @@ class ActionExecutor:
 
         contract = action.contract
 
-        # ---- mode authority ----
+        if not hasattr(contract, "execute") or not hasattr(contract, "allowed_mode"):
+            RefusalEngine.kill(
+                RefusalReason.INTERNAL_ERROR,
+                "invalid action contract",
+            )
+
         ModeGate.assert_allowed(require=contract.allowed_mode)
 
         log_event("action.begin", {"action": contract.name})
