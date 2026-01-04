@@ -34,23 +34,22 @@ class Frame:
 
 class ScreenAdapter:
     """
-    Passive frame normalizer.
+    Passive frame normalizer (visual cortex).
 
-    Role in GII:
-    - Acts like a human visual cortex buffer
-    - Does NOT see the world directly
-    - Receives pixels already captured by the body (backend)
-    - Enforces temporal and perceptual continuity
+    Mechanical role in GII:
+    - Receives raw pixels from the body (backend)
+    - Enforces temporal continuity
+    - Enforces perceptual continuity
+    - Performs no capture, no IO, no OS access
 
     Mechanical guarantees:
-    - Zero OS interaction
-    - Zero screen capture
-    - Zero backend access
+    - Import-time inert
     - No retries
     - No persistence
+    - No backend coupling
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         SystemState.assert_initialized()
         Poison.assert_clean()
 
