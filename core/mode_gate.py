@@ -25,7 +25,7 @@ class ModeGate:
     - Explicit, monotonic transitions
     - EXECUTE requires prior arming
     - No recovery after kill
-    - No side effects outside poison
+    - Poison is the only terminal mechanism
     """
 
     _lock = threading.Lock()
@@ -46,8 +46,10 @@ class ModeGate:
         with cls._lock:
             if cls._killed:
                 Poison.trigger("mode gate killed")
+
             if cls._armed_for_execute:
                 return
+
             cls._armed_for_execute = True
 
     @classmethod
@@ -57,10 +59,10 @@ class ModeGate:
             if cls._killed:
                 Poison.trigger("mode gate killed")
 
-            if target == Mode.EXECUTE and not cls._armed_for_execute:
+            if target is Mode.EXECUTE and not cls._armed_for_execute:
                 Poison.trigger("EXECUTE transition without arming")
 
-            if cls._mode == Mode.EXECUTE and target is not Mode.EXECUTE:
+            if cls._mode is Mode.EXECUTE and target is not Mode.EXECUTE:
                 Poison.trigger("illegal transition out of EXECUTE")
 
             cls._mode = target
