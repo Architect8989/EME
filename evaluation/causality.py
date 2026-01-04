@@ -11,16 +11,9 @@ def evaluate_causality(
     post_ts: float,
     max_expected_change: float = 0.25,
 ) -> Dict[str, Any]:
-    """
-    Deterministic causality gate.
-
-    Mechanical guarantees:
-    - Never guesses
-    - Never retries
-    - Any malformed input poisons immediately
-    - Only explicit, bounded attribution passes
-    """
-
+    # ─────────────────────────────
+    # Hard validation (fail-closed)
+    # ─────────────────────────────
     if not isinstance(delta, dict):
         Poison.trigger("invalid delta")
 
@@ -38,23 +31,29 @@ def evaluate_causality(
     if action_start > action_end:
         Poison.trigger("inverted time_window")
 
+    # ─────────────────────────────
+    # Delta validation
+    # ─────────────────────────────
     pixels_changed = delta.get("pixels_changed")
     percent_changed = delta.get("percent_changed")
 
     if not isinstance(pixels_changed, int):
         Poison.trigger("pixels_changed missing or invalid")
 
-    if pixels_changed <= 0:
-        return {
-            "attributed": False,
-            "reason": "no_observable_change",
-        }
-
     if not isinstance(percent_changed, (int, float)):
         Poison.trigger("percent_changed missing or invalid")
 
     if percent_changed < 0.0:
         Poison.trigger("negative percent_changed")
+
+    # ─────────────────────────────
+    # Attribution rules (explicit)
+    # ─────────────────────────────
+    if pixels_changed <= 0:
+        return {
+            "attributed": False,
+            "reason": "no_observable_change",
+        }
 
     if percent_changed > max_expected_change:
         return {
@@ -74,7 +73,10 @@ def evaluate_causality(
             "reason": "change_outside_window",
         }
 
+    # ─────────────────────────────
+    # Attribution success
+    # ─────────────────────────────
     return {
         "attributed": True,
         "reason": "within_window",
-        }
+   }
