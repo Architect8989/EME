@@ -2,7 +2,7 @@ import time
 import hashlib
 import threading
 from dataclasses import dataclass
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Any
 
 from core.system_state import SystemState
 from core.mode_gate import ModeGate, Mode
@@ -32,11 +32,17 @@ class Frame:
         }
 
 
-class CaptureError(RuntimeError):
-    pass
-
-
 class ScreenAdapter:
+    """
+    Passive frame normalizer.
+
+    Mechanical guarantees:
+    - No OS interaction
+    - No screen capture
+    - No backend access
+    - Accepts executor-supplied buffers only
+    """
+
     def __init__(self):
         SystemState.assert_initialized()
         Poison.assert_clean()
@@ -49,43 +55,44 @@ class ScreenAdapter:
         h.update(data)
         return h.hexdigest()
 
-    def _grab(self) -> Tuple[bytes, int, int, str]:
-        import mss
-
-        with mss.mss() as sct:
-            mon = sct.monitors[0]
-            img = sct.grab(mon)
-            data = img.bgra if hasattr(img, "bgra") else img.raw
-            if len(data) != img.width * img.height * 4:
-                raise CaptureError("buffer size mismatch")
-            return data, img.width, img.height, "BGRA"
-
-    def capture(self) -> Frame:
+    def ingest(
+        self,
+        *,
+        buffer: bytes,
+        width: int,
+        height: int,
+        pixel_format: str,
+        monitor: Optional[int] = None,
+    ) -> Frame:
         SystemState.assert_initialized()
         Poison.assert_clean()
         ModeGate.assert_allowed(require=Mode.PROBE)
+
+        if not isinstance(buffer, (bytes, bytearray)) or not buffer:
+            Poison.trigger("invalid screen buffer")
+
+        if not isinstance(width, int) or not isinstance(height, int):
+            Poison.trigger("invalid frame dimensions")
+
+        if width <= 0 or height <= 0:
+            Poison.trigger("non-positive frame dimensions")
 
         with self._lock:
             ts = time.monotonic()
             if ts <= self._last_timestamp:
                 Poison.trigger("non-monotonic screen timestamp")
 
-            try:
-                data, w, h, fmt = self._grab()
-            except BaseException as e:
-                Poison.trigger(f"screen grab failed: {repr(e)}")
-
-            checksum = self._checksum(data)
+            checksum = self._checksum(buffer)
 
             frame = Frame(
-                width=w,
-                height=h,
+                width=width,
+                height=height,
                 checksum=checksum,
                 timestamp_monotonic=ts,
                 previous_checksum=self._last_checksum,
-                monitor=None,
-                pixel_format=fmt,
-                buffer=data,
+                monitor=monitor,
+                pixel_format=pixel_format,
+                buffer=bytes(buffer),
             )
 
             self._last_timestamp = ts
