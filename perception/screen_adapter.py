@@ -36,16 +36,24 @@ class ScreenAdapter:
     """
     Passive frame normalizer.
 
+    Role in GII:
+    - Acts like a human visual cortex buffer
+    - Does NOT see the world directly
+    - Receives pixels already captured by the body (backend)
+    - Enforces temporal and perceptual continuity
+
     Mechanical guarantees:
-    - No OS interaction
-    - No screen capture
-    - No backend access
-    - Accepts executor-supplied buffers only
+    - Zero OS interaction
+    - Zero screen capture
+    - Zero backend access
+    - No retries
+    - No persistence
     """
 
     def __init__(self):
         SystemState.assert_initialized()
         Poison.assert_clean()
+
         self._lock = threading.Lock()
         self._last_timestamp: float = 0.0
         self._last_checksum: str = ""
@@ -76,6 +84,9 @@ class ScreenAdapter:
 
         if width <= 0 or height <= 0:
             Poison.trigger("non-positive frame dimensions")
+
+        if not isinstance(pixel_format, str) or not pixel_format:
+            Poison.trigger("invalid pixel format")
 
         with self._lock:
             ts = time.monotonic()
