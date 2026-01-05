@@ -4,7 +4,7 @@ import abc
 import time
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Protocol, Optional
+from typing import Any, Optional, Protocol
 
 from core.system_state import SystemState
 from core.poison import Poison
@@ -52,6 +52,11 @@ class Result:
 
 
 class BackendContract(Protocol):
+    """
+    Structural contract only.
+    No implementation may bypass BackendBase.
+    """
+
     def screenshot(self, *, _executor_token: Any) -> Result: ...
     def move_mouse(self, x: int, y: int, *, _executor_token: Any) -> Result: ...
     def click(self, button: str, count: int, *, _executor_token: Any) -> Result: ...
@@ -62,10 +67,11 @@ class BackendBase(BackendContract, abc.ABC):
     """
     Executor-monopoly backend base.
 
-    Mechanical invariants:
-    - Requires completed bootstrap
-    - Requires clean poison state
-    - Executor token is single-bind and identity-checked
+    Enforced invariants:
+    - System must be initialized
+    - Poison must be clean
+    - Executor token is identity-bound, single-bind
+    - All OS effects are gated
     - Any misuse is terminal
     """
 
@@ -77,7 +83,7 @@ class BackendBase(BackendContract, abc.ABC):
         self._executor_token: Optional[Any] = None
 
     # ─────────────────────────────────────────────
-    # Executor binding (single-use, irreversible)
+    # Executor binding (single-shot)
     # ─────────────────────────────────────────────
 
     def _bind_executor(self, token: Any) -> None:
@@ -99,11 +105,15 @@ class BackendBase(BackendContract, abc.ABC):
         if token is not self._executor_token:
             Poison.trigger("invalid executor token")
 
+    # ─────────────────────────────────────────────
+    # Guard wrapper
+    # ─────────────────────────────────────────────
+
     def _guard(self, token: Any) -> None:
         self._assert_executor(token)
 
     # ─────────────────────────────────────────────
-    # Executor-only public API
+    # Executor-only API (final, non-overridable)
     # ─────────────────────────────────────────────
 
     def screenshot(self, *, _executor_token: Any) -> Result:
@@ -113,12 +123,12 @@ class BackendBase(BackendContract, abc.ABC):
         try:
             payload = self._impl_screenshot()
         except BaseException as e:
-            Poison.trigger(f"backend screenshot failure: {repr(e)}")
+            Poison.trigger(f"screenshot failure: {repr(e)}")
 
         finished = time.time_ns()
 
         if not isinstance(payload, dict):
-            Poison.trigger("backend screenshot returned invalid payload")
+            Poison.trigger("screenshot returned invalid payload")
 
         return Result.ok_result(started, finished, **payload)
 
@@ -132,12 +142,12 @@ class BackendBase(BackendContract, abc.ABC):
         try:
             payload = self._impl_move_mouse(x, y)
         except BaseException as e:
-            Poison.trigger(f"backend move_mouse failure: {repr(e)}")
+            Poison.trigger(f"move_mouse failure: {repr(e)}")
 
         finished = time.time_ns()
 
         if not isinstance(payload, dict):
-            Poison.trigger("backend move_mouse returned invalid payload")
+            Poison.trigger("move_mouse returned invalid payload")
 
         return Result.ok_result(started, finished, **payload)
 
@@ -154,12 +164,12 @@ class BackendBase(BackendContract, abc.ABC):
         try:
             payload = self._impl_click(button, count)
         except BaseException as e:
-            Poison.trigger(f"backend click failure: {repr(e)}")
+            Poison.trigger(f"click failure: {repr(e)}")
 
         finished = time.time_ns()
 
         if payload is not None and not isinstance(payload, dict):
-            Poison.trigger("backend click returned invalid payload")
+            Poison.trigger("click returned invalid payload")
 
         return Result.ok_result(started, finished, **(payload or {}))
 
@@ -173,17 +183,17 @@ class BackendBase(BackendContract, abc.ABC):
         try:
             payload = self._impl_type_text(text)
         except BaseException as e:
-            Poison.trigger(f"backend type_text failure: {repr(e)}")
+            Poison.trigger(f"type_text failure: {repr(e)}")
 
         finished = time.time_ns()
 
         if payload is not None and not isinstance(payload, dict):
-            Poison.trigger("backend type_text returned invalid payload")
+            Poison.trigger("type_text returned invalid payload")
 
         return Result.ok_result(started, finished, **(payload or {}))
 
     # ─────────────────────────────────────────────
-    # Backend-specific implementations (OS-touching)
+    # OS-touching implementations (sealed below)
     # ─────────────────────────────────────────────
 
     @abc.abstractmethod
