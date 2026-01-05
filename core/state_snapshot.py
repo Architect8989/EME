@@ -11,8 +11,8 @@ HASH_DOWNSCALE = 8
 
 
 def _perceptual_hash(buffer: bytes, width: int, height: int) -> str:
-    if not buffer:
-        Poison.trigger("empty frame buffer")
+    if not isinstance(buffer, (bytes, bytearray)) or not buffer:
+        Poison.trigger("invalid or empty frame buffer")
 
     expected = width * height * 4
     if len(buffer) != expected:
@@ -24,8 +24,9 @@ def _perceptual_hash(buffer: bytes, width: int, height: int) -> str:
     acc = bytearray()
 
     for y in range(0, height, step_y):
-        for x in range(0, width * 4, step_x * 4):
-            idx = y * width * 4 + x
+        row_base = y * width * 4
+        for x in range(0, width, step_x):
+            idx = row_base + x * 4
             acc.append(buffer[idx])
 
     return hashlib.sha256(bytes(acc)).hexdigest()
@@ -33,6 +34,16 @@ def _perceptual_hash(buffer: bytes, width: int, height: int) -> str:
 
 @dataclass(frozen=True)
 class StateSnapshot:
+    """
+    Read-only perceptual snapshot.
+
+    Enforced invariants:
+    - No OS effects initiated here
+    - Read path only, executor-context only
+    - Deterministic, buffer-derived state
+    - Any ambiguity is terminal
+    """
+
     screen_hash: str
     resolution: Tuple[int, int]
     cursor: Tuple[int, int]
@@ -42,18 +53,29 @@ class StateSnapshot:
         Poison.assert_clean()
         ModeGate.assert_allowed(require=Mode.PROBE)
 
-        res: Result = backend.screenshot(_executor_token=backend._executor_token)
+        # executor-context read; backend enforces token internally
+        try:
+            res: Result = backend.screenshot(
+                _executor_token=backend._executor_token  # executor-owned context
+            )
+        except BaseException as e:
+            Poison.trigger(f"state snapshot screenshot failure: {repr(e)}")
+
         if not res.ok:
             Poison.trigger("screenshot failed during state snapshot")
 
-        if "buffer" not in res.details:
+        details = res.details
+        if not isinstance(details, dict):
+            Poison.trigger("screenshot details invalid")
+
+        if "buffer" not in details:
             Poison.trigger("screenshot missing buffer")
 
-        if "width" not in res.details or "height" not in res.details:
+        if "width" not in details or "height" not in details:
             Poison.trigger("screenshot missing resolution")
 
-        width = res.details["width"]
-        height = res.details["height"]
+        width = details["width"]
+        height = details["height"]
 
         if not isinstance(width, int) or not isinstance(height, int):
             Poison.trigger("invalid resolution type")
@@ -61,17 +83,19 @@ class StateSnapshot:
         if width <= 0 or height <= 0:
             Poison.trigger("invalid resolution values")
 
-        buffer = res.details["buffer"]
+        buffer = details["buffer"]
         screen_hash = _perceptual_hash(buffer, width, height)
 
-        cursor = res.details.get("cursor")
-        if cursor is None or not isinstance(cursor, tuple) or len(cursor) != 2:
-            Poison.trigger("cursor position unavailable")
+        cursor = details.get("cursor")
+        if (
+            cursor is None
+            or not isinstance(cursor, tuple)
+            or len(cursor) != 2
+            or not all(isinstance(v, int) for v in cursor)
+        ):
+            Poison.trigger("cursor position unavailable or invalid")
 
         x, y = cursor
-        if not isinstance(x, int) or not isinstance(y, int):
-            Poison.trigger("invalid cursor coordinates")
-
         if x < 0 or y < 0 or x >= width or y >= height:
             Poison.trigger("cursor out of bounds")
 
