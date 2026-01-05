@@ -1,18 +1,14 @@
 import time
 import hashlib
+import sys
 
 from core.poison import Poison
+from core.mode_gate import ModeGate, Mode
 from core.logger import log_event, log_crash
 from perception.screen_adapter import ScreenAdapter, Frame
 from execution.backend_contract import Result
 from evaluation.causality import evaluate_causality
 from perception.delta import compute_delta
-
-from perception_env.region_extractor import RegionExtractor
-from perception_env.object_tracker import ObjectTracker
-from perception_env.env_state_builder import EnvironmentStateBuilder
-from perception_env.affordance_detector import AffordanceDetector
-from perception_env.ephemeral_memory import EphemeralMemory
 
 
 class Unverified(RuntimeError):
@@ -29,29 +25,22 @@ def _hash_record(prev_hash: str, record: dict) -> str:
 
 class LifeLoop:
     """
-    Single-pass execution verifier with environment modeling.
+    Stage-1 single-cycle life loop.
 
-    Enforced invariants:
-    - Exactly one execution attempt
-    - Exactly two observations (pre/post)
-    - Environment modeling is read-only
-    - No retries, no loops
-    - Any ambiguity poisons immediately
+    Invariants:
+    - Stage-1 only
+    - Exactly one action
+    - Exactly two observations
+    - No environment modeling
+    - No retries
+    - Any ambiguity is terminal
     """
 
-    __slots__ = (
-        "_executor",
-        "_screen",
-        "_last_hash",
-        "_region_extractor",
-        "_object_tracker",
-        "_env_builder",
-        "_affordance_detector",
-        "_memory",
-    )
+    __slots__ = ("_executor", "_screen", "_last_hash")
 
     def __init__(self, executor) -> None:
         Poison.assert_clean()
+        ModeGate.assert_mode(Mode.STAGE_1)
 
         if executor is None:
             Poison.trigger("life_loop instantiated without executor")
@@ -60,30 +49,19 @@ class LifeLoop:
         self._screen = ScreenAdapter()
         self._last_hash = ""
 
-        # ── environment modeling components (inert, deterministic)
-        self._region_extractor = RegionExtractor()
-        self._object_tracker = ObjectTracker()
-        self._env_builder = EnvironmentStateBuilder()
-        self._affordance_detector = AffordanceDetector()
-        self._memory = EphemeralMemory()
-
-    def run_experiment(self, action) -> dict:
+    def run_stage_1(self, action) -> dict:
         Poison.assert_clean()
+        ModeGate.assert_mode(Mode.STAGE_1)
 
         start_ts = time.monotonic()
         verdict = "UNVERIFIED"
         error = None
 
         try:
-            log_event("experiment.begin")
+            log_event("stage1.begin")
 
-            # ──────────────────
-            # OBSERVE (PRE)
-            # ──────────────────
-            pre_res: Result = self._executor.backend.screenshot(
-                _executor_token=self._executor.token
-            )
-
+            # ── OBSERVE (PRE)
+            pre_res: Result = self._executor._backend.screenshot()
             if not pre_res.ok:
                 Poison.trigger("pre-screenshot failed")
 
@@ -94,35 +72,11 @@ class LifeLoop:
                 pixel_format=pre_res.details["pixel_format"],
             )
 
-            # ──────────────────
-            # ENVIRONMENT MODELING (READ-ONLY)
-            # ──────────────────
-            regions = self._region_extractor.extract(pre)
-            objects = self._object_tracker.update(regions)
+            # ── EXECUTE (SOLE ACTION)
+            self._executor.execute(action)
 
-            cursor = pre_res.details.get("cursor")
-            env_state = self._env_builder.build(
-                objects=objects,
-                cursor=cursor,
-            )
-
-            affordances = self._affordance_detector.detect(env_state)
-            # NOTE: affordances are hypotheses only
-            # No execution decision is made here unless an action is explicitly provided
-
-            # ──────────────────
-            # EXECUTE (SOLE AUTHORITY)
-            # ──────────────────
-            if action is not None:
-                self._executor.execute(action)
-
-            # ──────────────────
-            # OBSERVE (POST)
-            # ──────────────────
-            post_res: Result = self._executor.backend.screenshot(
-                _executor_token=self._executor.token
-            )
-
+            # ── OBSERVE (POST)
+            post_res: Result = self._executor._backend.screenshot()
             if not post_res.ok:
                 Poison.trigger("post-screenshot failed")
 
@@ -133,9 +87,7 @@ class LifeLoop:
                 pixel_format=post_res.details["pixel_format"],
             )
 
-            # ──────────────────
-            # DELTA (BUFFER-LEVEL)
-            # ──────────────────
+            # ── DELTA
             delta = compute_delta(
                 pre_buffer=pre.buffer,
                 post_buffer=post.buffer,
@@ -143,27 +95,25 @@ class LifeLoop:
                 height=pre.height,
             )
 
-            # ──────────────────
-            # CAUSALITY (FAIL-CLOSED)
-            # ──────────────────
-            causality = evaluate_causality(
+            # ── CAUSALITY (BINARY)
+            attributed = evaluate_causality(
                 delta=delta,
                 time_window=(start_ts, time.monotonic()),
                 pre_ts=pre.timestamp_monotonic,
                 post_ts=post.timestamp_monotonic,
             )
 
-            if causality.get("attributed") is not True:
-                raise Unverified(causality.get("reason", "causality_failed"))
+            if attributed is not True:
+                raise Unverified("causality_failed")
 
             verdict = "VERIFIED"
 
         except BaseException as e:
             error = repr(e)
-            Poison.trigger(f"life_loop failure: {error}")
+            Poison.trigger(f"stage1 failure: {error}")
 
         record = {
-            "type": "experiment",
+            "type": "stage1",
             "verdict": verdict,
             "error": error,
             "duration": time.monotonic() - start_ts,
@@ -175,12 +125,12 @@ class LifeLoop:
         self._last_hash = record_hash
 
         try:
-            log_event(f"experiment.{verdict.lower()}")
+            log_event(f"stage1.{verdict.lower()}")
         except BaseException as e:
             log_crash("logging failure", {"error": repr(e)})
             Poison.trigger(f"logging failure: {repr(e)}")
 
         if verdict != "VERIFIED":
-            Poison.trigger("non-verified execution reached return")
+            Poison.trigger("non-verified Stage-1 reached return")
 
-        return record
+        sys.exit(0)
