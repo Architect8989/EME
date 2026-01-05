@@ -1,4 +1,8 @@
+from core.mode_gate import ModeGate, Mode
 from core.poison import Poison
+
+if ModeGate.current() == Mode.STAGE_1:
+    Poison.trigger("probe_action forbidden in Stage-1")from core.poison import Poison
 from core.system_state import SystemState
 
 
