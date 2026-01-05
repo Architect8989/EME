@@ -11,6 +11,10 @@ from core.poison import Poison
 
 @dataclass(frozen=True)
 class Frame:
+    """
+    Immutable perceptual frame.
+    Pure data; no behavior.
+    """
     width: int
     height: int
     checksum: str
@@ -34,19 +38,15 @@ class Frame:
 
 class ScreenAdapter:
     """
-    Passive frame normalizer (visual cortex).
+    Passive frame normalizer.
 
-    Mechanical role in GII:
-    - Receives raw pixels from the body (backend)
-    - Enforces temporal continuity
-    - Enforces perceptual continuity
-    - Performs no capture, no IO, no OS access
-
-    Mechanical guarantees:
-    - Import-time inert
-    - No retries
-    - No persistence
+    Enforced invariants:
+    - No OS access
     - No backend coupling
+    - Import-time inert
+    - Deterministic
+    - Monotonic time
+    - No retries, no persistence
     """
 
     _BYTES_PER_PIXEL = 4
@@ -60,10 +60,11 @@ class ScreenAdapter:
         self._last_timestamp: float = 0.0
         self._last_checksum: str = ""
 
-    def _checksum(self, data: bytes) -> str:
-        h = hashlib.sha256()
-        h.update(data)
-        return h.hexdigest()
+    @staticmethod
+    def _checksum(data: bytes) -> str:
+        if not isinstance(data, (bytes, bytearray)) or not data:
+            Poison.trigger("invalid buffer for checksum")
+        return hashlib.sha256(bytes(data)).hexdigest()
 
     def ingest(
         self,
@@ -78,11 +79,9 @@ class ScreenAdapter:
         Poison.assert_clean()
         ModeGate.assert_allowed(require=Mode.PROBE)
 
-        # ─────────────────────────────
-        # Hard validation (fail-closed)
-        # ─────────────────────────────
-        if not isinstance(buffer, (bytes, bytearray)) or not buffer:
-            Poison.trigger("invalid screen buffer")
+        # ───────── HARD VALIDATION ─────────
+        if not isinstance(buffer, (bytes, bytearray)):
+            Poison.trigger("screen buffer not bytes")
 
         if not isinstance(width, int) or not isinstance(height, int):
             Poison.trigger("invalid frame dimensions")
@@ -94,17 +93,14 @@ class ScreenAdapter:
             Poison.trigger("unsupported pixel format")
 
         expected_len = width * height * self._BYTES_PER_PIXEL
-
         if len(buffer) != expected_len:
-            Poison.trigger("buffer length does not match dimensions")
+            Poison.trigger("buffer length mismatch")
 
-        # ─────────────────────────────
-        # Temporal + perceptual continuity
-        # ─────────────────────────────
+        # ───────── CONTINUITY ENFORCEMENT ─────────
         with self._lock:
             ts = time.monotonic()
             if ts <= self._last_timestamp:
-                Poison.trigger("non-monotonic screen timestamp")
+                Poison.trigger("non-monotonic frame timestamp")
 
             checksum = self._checksum(buffer)
 
