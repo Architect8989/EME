@@ -4,11 +4,22 @@ from typing import Callable, Iterable
 from core.mode_gate import ModeGate, Mode
 from core.poison import Poison
 from core.state_snapshot import StateSnapshot
-from execution.backend_contract import BackendBase, Result, ErrorCode
+from execution.backend_contract import Result, ErrorCode
 
 
 @dataclass(frozen=True)
 class ActionContract:
+    """
+    Sole authorization surface for actions.
+
+    Enforced invariants:
+    - No OS effects outside executor
+    - Mode strictly enforced
+    - Pre / forbidden / post evaluated deterministically
+    - Any ambiguity is terminal
+    - No silent success or recovery
+    """
+
     name: str
     allowed_mode: Mode
     precondition: Callable[[StateSnapshot], bool]
@@ -19,57 +30,75 @@ class ActionContract:
     def execute(
         self,
         *,
-        backend: BackendBase,
+        backend,
         action: Callable[[], Result],
     ) -> Result:
+        # absolute guards
         Poison.assert_clean()
         ModeGate.assert_allowed(require=self.allowed_mode)
 
+        # ---- PRE STATE ----
         try:
             before = StateSnapshot.from_backend(backend)
-        except Exception as e:
-            Poison.trigger(f"{self.name}: failed to capture pre-action state: {e}")
+        except BaseException as e:
+            Poison.trigger(f"{self.name}: pre-state capture failed: {repr(e)}")
 
+        # ---- PRECONDITION ----
         try:
             pre_ok = self.precondition(before)
-        except Exception as e:
-            Poison.trigger(f"{self.name}: precondition evaluation error: {e}")
-
-        if pre_ok is False:
-            return Result.err(ErrorCode.PRECONDITION_FAILED)
+        except BaseException as e:
+            Poison.trigger(f"{self.name}: precondition error: {repr(e)}")
 
         if pre_ok is None:
             Poison.trigger(f"{self.name}: precondition indeterminate")
 
+        if pre_ok is False:
+            return Result.err_result(
+                ErrorCode.PRECONDITION_VIOLATION,
+                started_at_ns=0,
+                finished_at_ns=0,
+                reason="precondition_failed",
+            )
+
+        # ---- FORBIDDEN ----
         for forbid in self.forbidden:
             try:
-                forbidden_hit = forbid(before)
-            except Exception as e:
-                Poison.trigger(f"{self.name}: forbidden check error: {e}")
+                hit = forbid(before)
+            except BaseException as e:
+                Poison.trigger(f"{self.name}: forbidden check error: {repr(e)}")
 
-            if forbidden_hit:
+            if hit:
                 Poison.trigger(f"{self.name}: forbidden state detected")
 
+        # ---- EXECUTE (DELEGATED ONLY) ----
         Poison.assert_clean()
-        result = action()
+        try:
+            result = action()
+        except BaseException as e:
+            Poison.trigger(f"{self.name}: action execution error: {repr(e)}")
+
+        if not isinstance(result, Result):
+            Poison.trigger(f"{self.name}: non-Result returned")
 
         if not result.ok:
             return result
 
+        # ---- POST STATE ----
         try:
             after = StateSnapshot.from_backend(backend)
-        except Exception as e:
-            Poison.trigger(f"{self.name}: failed to capture post-action state: {e}")
+        except BaseException as e:
+            Poison.trigger(f"{self.name}: post-state capture failed: {repr(e)}")
 
+        # ---- POSTCONDITION ----
         try:
             post_ok = self.postcondition(before, after)
-        except Exception as e:
-            Poison.trigger(f"{self.name}: postcondition evaluation error: {e}")
-
-        if post_ok is False:
-            ModeGate.kill(f"{self.name}: postcondition violated")
+        except BaseException as e:
+            Poison.trigger(f"{self.name}: postcondition error: {repr(e)}")
 
         if post_ok is None:
             Poison.trigger(f"{self.name}: postcondition indeterminate")
+
+        if post_ok is False:
+            ModeGate.kill(f"{self.name}: postcondition violated")
 
         return result
