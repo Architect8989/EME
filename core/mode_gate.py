@@ -20,12 +20,13 @@ class ModeGate:
     """
     Deterministic, fail-closed mode authority.
 
-    Mechanical invariants:
+    Enforced invariants:
     - Single global mode
     - Explicit, monotonic transitions
-    - EXECUTE requires prior arming
-    - No recovery after kill
-    - Poison is the only terminal mechanism
+    - EXECUTE requires explicit arming
+    - No transition out of EXECUTE
+    - No silent no-ops
+    - Kill is terminal and irreversible
     """
 
     _lock = threading.Lock()
@@ -38,6 +39,8 @@ class ModeGate:
     def current_mode(cls) -> Mode:
         Poison.assert_clean()
         with cls._lock:
+            if cls._killed:
+                Poison.trigger("mode gate killed")
             return cls._mode
 
     @classmethod
@@ -47,8 +50,11 @@ class ModeGate:
             if cls._killed:
                 Poison.trigger("mode gate killed")
 
+            if cls._mode is not Mode.PROBE and cls._mode is not Mode.CALIBRATE:
+                Poison.trigger("arm_execute from invalid mode")
+
             if cls._armed_for_execute:
-                return
+                Poison.trigger("duplicate arm_execute")
 
             cls._armed_for_execute = True
 
@@ -59,11 +65,18 @@ class ModeGate:
             if cls._killed:
                 Poison.trigger("mode gate killed")
 
-            if target is Mode.EXECUTE and not cls._armed_for_execute:
-                Poison.trigger("EXECUTE transition without arming")
+            if not isinstance(target, Mode):
+                Poison.trigger("invalid mode transition target")
 
+            # monotonic, explicit transitions only
             if cls._mode is Mode.EXECUTE and target is not Mode.EXECUTE:
                 Poison.trigger("illegal transition out of EXECUTE")
+
+            if target is Mode.EXECUTE:
+                if not cls._armed_for_execute:
+                    Poison.trigger("EXECUTE transition without arming")
+                # consume the arm exactly once
+                cls._armed_for_execute = False
 
             cls._mode = target
             cls._since = time.time()
@@ -76,7 +89,7 @@ class ModeGate:
                 Poison.trigger("mode gate killed")
 
             if cls._mode is not require:
-                raise ModeViolation(
+                Poison.trigger(
                     f"mode violation: required={require.value}, current={cls._mode.value}"
                 )
 
@@ -89,5 +102,6 @@ class ModeGate:
             cls._killed = True
             cls._mode = Mode.REFUSE
             cls._armed_for_execute = False
+            cls._since = None
 
         Poison.trigger(f"mode gate kill: {reason}")
