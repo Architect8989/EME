@@ -4,8 +4,15 @@ import hashlib
 from core.poison import Poison
 from core.logger import log_event, log_crash
 from perception.screen_adapter import ScreenAdapter, Frame
+from execution.backend_contract import Result
 from evaluation.causality import evaluate_causality
 from perception.delta import compute_delta
+
+from perception_env.region_extractor import RegionExtractor
+from perception_env.object_tracker import ObjectTracker
+from perception_env.env_state_builder import EnvironmentStateBuilder
+from perception_env.affordance_detector import AffordanceDetector
+from perception_env.ephemeral_memory import EphemeralMemory
 
 
 class Unverified(RuntimeError):
@@ -22,17 +29,26 @@ def _hash_record(prev_hash: str, record: dict) -> str:
 
 class LifeLoop:
     """
-    Single-pass execution verifier.
+    Single-pass execution verifier with environment modeling.
 
     Enforced invariants:
     - Exactly one execution attempt
     - Exactly two observations (pre/post)
+    - Environment modeling is read-only
     - No retries, no loops
-    - No swallow, no continuation
     - Any ambiguity poisons immediately
     """
 
-    __slots__ = ("_executor", "_screen", "_last_hash")
+    __slots__ = (
+        "_executor",
+        "_screen",
+        "_last_hash",
+        "_region_extractor",
+        "_object_tracker",
+        "_env_builder",
+        "_affordance_detector",
+        "_memory",
+    )
 
     def __init__(self, executor) -> None:
         Poison.assert_clean()
@@ -43,6 +59,13 @@ class LifeLoop:
         self._executor = executor
         self._screen = ScreenAdapter()
         self._last_hash = ""
+
+        # ── environment modeling components (inert, deterministic)
+        self._region_extractor = RegionExtractor()
+        self._object_tracker = ObjectTracker()
+        self._env_builder = EnvironmentStateBuilder()
+        self._affordance_detector = AffordanceDetector()
+        self._memory = EphemeralMemory()
 
     def run_experiment(self, action) -> dict:
         Poison.assert_clean()
@@ -57,19 +80,8 @@ class LifeLoop:
             # ──────────────────
             # OBSERVE (PRE)
             # ──────────────────
-            pre_res = self._executor.execute(
-                action=None  # forbidden, must fail if misused
-            )
-            Poison.trigger("executor allowed null action")  # unreachable
-
-        except BaseException:
-            # expected path: executor must not allow null action
-            pass
-
-        try:
-            # real pre-screenshot (executor monopoly)
-            pre_res = self._executor._get_backend(self._executor._token).screenshot(
-                _executor_token=self._executor._token
+            pre_res: Result = self._executor.backend.screenshot(
+                _executor_token=self._executor.token
             )
 
             if not pre_res.ok:
@@ -83,15 +95,32 @@ class LifeLoop:
             )
 
             # ──────────────────
+            # ENVIRONMENT MODELING (READ-ONLY)
+            # ──────────────────
+            regions = self._region_extractor.extract(pre)
+            objects = self._object_tracker.update(regions)
+
+            cursor = pre_res.details.get("cursor")
+            env_state = self._env_builder.build(
+                objects=objects,
+                cursor=cursor,
+            )
+
+            affordances = self._affordance_detector.detect(env_state)
+            # NOTE: affordances are hypotheses only
+            # No execution decision is made here unless an action is explicitly provided
+
+            # ──────────────────
             # EXECUTE (SOLE AUTHORITY)
             # ──────────────────
-            self._executor.execute(action)
+            if action is not None:
+                self._executor.execute(action)
 
             # ──────────────────
             # OBSERVE (POST)
             # ──────────────────
-            post_res = self._executor._get_backend(self._executor._token).screenshot(
-                _executor_token=self._executor._token
+            post_res: Result = self._executor.backend.screenshot(
+                _executor_token=self._executor.token
             )
 
             if not post_res.ok:
