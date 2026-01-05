@@ -1,107 +1,58 @@
 from enum import Enum
 import threading
-import time
 
 from core.poison import Poison
 
 
 class Mode(Enum):
+    STAGE_1 = "stage_1"     # newborn, single-action, sealed
+    STAGE_2 = "stage_2"     # future (not reachable now)
     REFUSE = "refuse"
-    PROBE = "probe"
-    CALIBRATE = "calibrate"
-    EXECUTE = "execute"
-
-
-class ModeViolation(RuntimeError):
-    pass
 
 
 class ModeGate:
     """
-    Deterministic, fail-closed mode authority.
+    Absolute mode authority.
 
-    Enforced invariants:
-    - Single global mode
-    - Explicit, monotonic transitions
-    - EXECUTE requires explicit arming
-    - No transition out of EXECUTE
-    - No silent no-ops
-    - Kill is terminal and irreversible
+    Stage-1 invariants:
+    - Mode is set exactly once
+    - No transitions allowed
+    - Any deviation is terminal
     """
 
     _lock = threading.Lock()
-    _mode: Mode = Mode.REFUSE
-    _armed_for_execute: bool = False
-    _killed: bool = False
-    _since: float | None = None
+    _mode: Mode | None = None
+    _locked: bool = False
 
     @classmethod
-    def current_mode(cls) -> Mode:
+    def force(cls, mode: Mode) -> None:
+        Poison.assert_clean()
+        if not isinstance(mode, Mode):
+            Poison.trigger("invalid mode force")
+
+        with cls._lock:
+            if cls._locked:
+                Poison.trigger("mode already locked")
+
+            cls._mode = mode
+            cls._locked = True
+
+    @classmethod
+    def current(cls) -> Mode:
         Poison.assert_clean()
         with cls._lock:
-            if cls._killed:
-                Poison.trigger("mode gate killed")
+            if not cls._locked or cls._mode is None:
+                Poison.trigger("mode not initialized")
             return cls._mode
 
     @classmethod
-    def arm_execute(cls) -> None:
+    def assert_mode(cls, required: Mode) -> None:
         Poison.assert_clean()
         with cls._lock:
-            if cls._killed:
-                Poison.trigger("mode gate killed")
+            if not cls._locked or cls._mode is None:
+                Poison.trigger("mode not initialized")
 
-            if cls._mode is not Mode.PROBE and cls._mode is not Mode.CALIBRATE:
-                Poison.trigger("arm_execute from invalid mode")
-
-            if cls._armed_for_execute:
-                Poison.trigger("duplicate arm_execute")
-
-            cls._armed_for_execute = True
-
-    @classmethod
-    def transition(cls, target: Mode) -> None:
-        Poison.assert_clean()
-        with cls._lock:
-            if cls._killed:
-                Poison.trigger("mode gate killed")
-
-            if not isinstance(target, Mode):
-                Poison.trigger("invalid mode transition target")
-
-            # monotonic, explicit transitions only
-            if cls._mode is Mode.EXECUTE and target is not Mode.EXECUTE:
-                Poison.trigger("illegal transition out of EXECUTE")
-
-            if target is Mode.EXECUTE:
-                if not cls._armed_for_execute:
-                    Poison.trigger("EXECUTE transition without arming")
-                # consume the arm exactly once
-                cls._armed_for_execute = False
-
-            cls._mode = target
-            cls._since = time.time()
-
-    @classmethod
-    def assert_allowed(cls, *, require: Mode) -> None:
-        Poison.assert_clean()
-        with cls._lock:
-            if cls._killed:
-                Poison.trigger("mode gate killed")
-
-            if cls._mode is not require:
+            if cls._mode is not required:
                 Poison.trigger(
-                    f"mode violation: required={require.value}, current={cls._mode.value}"
-                )
-
-    @classmethod
-    def kill(cls, reason: str) -> None:
-        with cls._lock:
-            if cls._killed:
-                Poison.trigger("mode gate already killed")
-
-            cls._killed = True
-            cls._mode = Mode.REFUSE
-            cls._armed_for_execute = False
-            cls._since = None
-
-        Poison.trigger(f"mode gate kill: {reason}")
+                    f"mode violation: required={required.value}, current={cls._mode.value}"
+    )
