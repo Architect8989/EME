@@ -11,12 +11,12 @@ class Poison:
     """
     Terminal, irreversible poison latch.
 
-    Mechanical invariants:
+    Mechanical invariants (enforced):
     - Write-once
-    - Cannot be cleared
+    - Global and permanent
     - Dominates all execution paths
-    - No filesystem access
-    - No recovery or reset
+    - No reset, no recovery, no suppression
+    - Once triggered, execution must not continue
     """
 
     _lock = threading.Lock()
@@ -40,18 +40,29 @@ class Poison:
 
         with cls._lock:
             if cls._poisoned:
-                raise PoisonError(f"system already poisoned: {cls._reason}")
+                # already terminal; do not allow continuation
+                sys.stderr.write(
+                    f"[POISONED:REENTER] {cls._reason}\n"
+                )
+                sys.stderr.flush()
+                sys.exit(1)
 
             cls._poisoned = True
             cls._reason = reason
 
+        # irreversible external signal
         sys.stderr.write(f"[POISONED] {reason}\n")
         sys.stderr.flush()
 
-        raise PoisonError(reason)
+        # absolute termination point
+        sys.exit(1)
 
     @classmethod
     def assert_clean(cls) -> None:
         with cls._lock:
             if cls._poisoned:
-                raise PoisonError(f"system poisoned: {cls._reason}")
+                sys.stderr.write(
+                    f"[POISONED:ASSERT] {cls._reason}\n"
+                )
+                sys.stderr.flush()
+                sys.exit(1)
