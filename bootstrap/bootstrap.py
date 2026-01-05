@@ -1,7 +1,6 @@
 import sys
 
 from core.mode_gate import ModeGate, Mode
-from core.environment_contract import EnvironmentContract
 from core.poison import Poison
 from core.system_state import SystemState
 
@@ -18,45 +17,32 @@ def _abort(reason: str) -> None:
 
 def bootstrap(bootstrap_token) -> dict:
     """
-    Deterministic, single-shot bootstrap.
+    Stage-1 deterministic bootstrap.
 
-    Enforced invariants:
-    - Must be called exactly once
-    - Requires valid bootstrap token
-    - No OS interaction
-    - No branching recovery
-    - Any ambiguity is terminal
+    Invariants:
+    - Called exactly once
+    - Valid bootstrap token required
+    - NO environment semantics
+    - NO Stage-2 code
+    - Stage-1 mode is locked here and never changes
     """
 
-    # global terminal guards
     Poison.assert_clean()
 
-    # bootstrap token must be valid and current
+    # bootstrap token verification
     try:
         if bootstrap_token is not SystemState._token:
             _abort("invalid or stale bootstrap token")
     except BaseException:
         _abort("bootstrap token verification failed")
 
-    # environment contract must verify or halt
+    # HARD LOCK MODE: STAGE_1 ONLY
     try:
-        env_fp = EnvironmentContract.verify()
+        ModeGate.force(Mode.STAGE_1)
     except BaseException as e:
-        _abort(f"environment verification failed: {repr(e)}")
+        _abort(f"failed to lock Stage-1 mode: {repr(e)}")
 
-    # deterministic initial mode
-    try:
-        ModeGate.transition(Mode.PROBE)
-    except BaseException as e:
-        _abort(f"mode initialization failed: {repr(e)}")
-
-    # bootstrap returns only inert data
-    try:
-        env_hash = EnvironmentContract.fingerprint_hash(env_fp)
-    except BaseException as e:
-        _abort(f"environment hash failed: {repr(e)}")
-
+    # Return only inert, non-semantic data
     return {
-        "environment_hash": env_hash,
         "status": "BOOTSTRAP_OK",
     }
