@@ -10,43 +10,53 @@ class BootstrapError(RuntimeError):
     pass
 
 
-def hard_abort(reason: str) -> None:
+def _abort(reason: str) -> None:
     sys.stderr.write(f"[BOOTSTRAP ABORT] {reason}\n")
     sys.stderr.flush()
-    raise BootstrapError(reason)
+    Poison.trigger(f"bootstrap abort: {reason}")
 
 
-def bootstrap() -> dict:
+def bootstrap(bootstrap_token) -> dict:
     """
-    Deterministic, executor-neutral bootstrap.
-    No OS inspection.
-    No signal handling.
-    No environment branching.
-    Single irreversible init path.
+    Deterministic, single-shot bootstrap.
+
+    Enforced invariants:
+    - Must be called exactly once
+    - Requires valid bootstrap token
+    - No OS interaction
+    - No branching recovery
+    - Any ambiguity is terminal
     """
 
-    # must never run in poisoned state
+    # global terminal guards
     Poison.assert_clean()
 
-    # environment contract must be explicitly verified or halt
+    # bootstrap token must be valid and current
+    try:
+        if bootstrap_token is not SystemState._token:
+            _abort("invalid or stale bootstrap token")
+    except BaseException:
+        _abort("bootstrap token verification failed")
+
+    # environment contract must verify or halt
     try:
         env_fp = EnvironmentContract.verify()
-    except Exception as e:
-        hard_abort(str(e))
-
-    # exclusive bootstrap authority
-    try:
-        token = SystemState._issue_bootstrap_token()
-        SystemState.mark_initialized(token)
-    except Exception as e:
-        hard_abort(f"initialization failed: {e}")
+    except BaseException as e:
+        _abort(f"environment verification failed: {repr(e)}")
 
     # deterministic initial mode
-    ModeGate.disarm()
-    ModeGate.arm(Mode.PROBE)
+    try:
+        ModeGate.transition(Mode.PROBE)
+    except BaseException as e:
+        _abort(f"mode initialization failed: {repr(e)}")
+
+    # bootstrap returns only inert data
+    try:
+        env_hash = EnvironmentContract.fingerprint_hash(env_fp)
+    except BaseException as e:
+        _abort(f"environment hash failed: {repr(e)}")
 
     return {
-        "mode": ModeGate.current_mode().value,
-        "environment_hash": EnvironmentContract.fingerprint_hash(env_fp),
+        "environment_hash": env_hash,
         "status": "BOOTSTRAP_OK",
     }
