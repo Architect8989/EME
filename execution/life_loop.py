@@ -24,9 +24,9 @@ class LifeLoop:
     """
     Single-pass execution verifier.
 
-    Mechanical guarantees:
+    Mechanical invariants:
     - Exactly one action
-    - Exactly two observations
+    - Exactly two observations (pre/post)
     - No retries
     - No loops
     - Any ambiguity poisons immediately
@@ -34,7 +34,7 @@ class LifeLoop:
 
     __slots__ = ("_executor", "_screen", "_last_hash")
 
-    def __init__(self, executor):
+    def __init__(self, executor) -> None:
         Poison.assert_clean()
         self._executor = executor
         self._screen = ScreenAdapter()
@@ -90,7 +90,7 @@ class LifeLoop:
             )
 
             # ──────────────────
-            # DELTA (DETERMINISTIC)
+            # DELTA (DETERMINISTIC, BUFFER-LEVEL)
             # ──────────────────
             delta = compute_delta(
                 pre_buffer=pre.buffer,
