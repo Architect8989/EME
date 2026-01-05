@@ -6,8 +6,15 @@ from core.poison import Poison
 @dataclass(frozen=True)
 class EnvironmentFingerprint:
     """
-    Deterministic, constant environment fingerprint.
+    Immutable environment fingerprint.
+
+    Enforced invariants:
+    - Pure data container
+    - No computation
+    - No derivation
+    - No mutation
     """
+
     fingerprint_hash: str
 
 
@@ -15,12 +22,13 @@ class EnvironmentContract:
     """
     Frozen-environment contract.
 
-    Mechanical guarantees:
+    Enforced invariants:
     - No OS inspection
     - No platform probing
     - No subprocess usage
     - No conditional behavior
-    - Deterministic, non-failing verification
+    - No entropy sources
+    - Deterministic, total verification
     """
 
     _FROZEN_FINGERPRINT = EnvironmentFingerprint(
@@ -30,9 +38,25 @@ class EnvironmentContract:
     @classmethod
     def verify(cls) -> EnvironmentFingerprint:
         Poison.assert_clean()
-        return cls._FROZEN_FINGERPRINT
+
+        fp = cls._FROZEN_FINGERPRINT
+        if not isinstance(fp, EnvironmentFingerprint):
+            Poison.trigger("environment fingerprint corrupted")
+
+        if not isinstance(fp.fingerprint_hash, str) or not fp.fingerprint_hash:
+            Poison.trigger("invalid environment fingerprint")
+
+        return fp
 
     @staticmethod
     def fingerprint_hash(fp: EnvironmentFingerprint) -> str:
         Poison.assert_clean()
-        return fp.fingerprint_hash
+
+        if not isinstance(fp, EnvironmentFingerprint):
+            Poison.trigger("invalid fingerprint object")
+
+        h = fp.fingerprint_hash
+        if not isinstance(h, str) or not h:
+            Poison.trigger("invalid fingerprint hash")
+
+        return h
