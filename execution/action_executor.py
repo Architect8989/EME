@@ -13,7 +13,7 @@ from core.logger import log_event
 class ExecutorToken:
     __slots__ = ("_id",)
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._id = uuid.uuid4().hex
 
 
@@ -30,15 +30,24 @@ class ActionExecutor:
 
     __slots__ = ("_token", "_backend", "_env_hash", "_calibration")
 
-    def __init__(self, *, environment_hash: str):
+    def __init__(self, *, environment_hash: str) -> None:
+        # ─────────────────────────────
+        # Global guards
+        # ─────────────────────────────
         SystemState.assert_initialized()
         Poison.assert_clean()
 
         if not isinstance(environment_hash, str) or not environment_hash:
             Poison.trigger("invalid environment hash")
 
+        # ─────────────────────────────
+        # Executor authority (single-use)
+        # ─────────────────────────────
         token = ExecutorToken()
 
+        # ─────────────────────────────
+        # Backend binding (deterministic)
+        # ─────────────────────────────
         try:
             from body.linux_backend import LinuxBackend
         except BaseException as e:
@@ -50,10 +59,17 @@ class ActionExecutor:
         self._backend = backend
         self._env_hash = environment_hash
 
+        # ─────────────────────────────
+        # Calibration (mandatory, terminal)
+        # ─────────────────────────────
         try:
             self._calibration = load_calibration(environment_hash)
         except BaseException as e:
             Poison.trigger(f"calibration invalid: {repr(e)}")
+
+    # ─────────────────────────────
+    # Restricted accessors
+    # ─────────────────────────────
 
     @property
     def backend(self):
@@ -62,6 +78,10 @@ class ActionExecutor:
     @property
     def token(self):
         return self._token
+
+    # ─────────────────────────────
+    # Execution path (fail-closed)
+    # ─────────────────────────────
 
     def execute(self, action: Any) -> Result:
         SystemState.assert_initialized()
