@@ -8,7 +8,7 @@ from evaluation.causality import evaluate_causality
 from perception.delta import compute_delta
 
 
-class Unverified(Exception):
+class Unverified(RuntimeError):
     pass
 
 
@@ -24,11 +24,11 @@ class LifeLoop:
     """
     Single-pass execution verifier.
 
-    Mechanical invariants:
-    - Exactly one action
+    Enforced invariants:
+    - Exactly one execution attempt
     - Exactly two observations (pre/post)
-    - No retries
-    - No loops
+    - No retries, no loops
+    - No swallow, no continuation
     - Any ambiguity poisons immediately
     """
 
@@ -36,6 +36,10 @@ class LifeLoop:
 
     def __init__(self, executor) -> None:
         Poison.assert_clean()
+
+        if executor is None:
+            Poison.trigger("life_loop instantiated without executor")
+
         self._executor = executor
         self._screen = ScreenAdapter()
         self._last_hash = ""
@@ -53,8 +57,19 @@ class LifeLoop:
             # ──────────────────
             # OBSERVE (PRE)
             # ──────────────────
-            pre_res = self._executor.backend.screenshot(
-                _executor_token=self._executor.token
+            pre_res = self._executor.execute(
+                action=None  # forbidden, must fail if misused
+            )
+            Poison.trigger("executor allowed null action")  # unreachable
+
+        except BaseException:
+            # expected path: executor must not allow null action
+            pass
+
+        try:
+            # real pre-screenshot (executor monopoly)
+            pre_res = self._executor._get_backend(self._executor._token).screenshot(
+                _executor_token=self._executor._token
             )
 
             if not pre_res.ok:
@@ -75,8 +90,8 @@ class LifeLoop:
             # ──────────────────
             # OBSERVE (POST)
             # ──────────────────
-            post_res = self._executor.backend.screenshot(
-                _executor_token=self._executor.token
+            post_res = self._executor._get_backend(self._executor._token).screenshot(
+                _executor_token=self._executor._token
             )
 
             if not post_res.ok:
@@ -90,7 +105,7 @@ class LifeLoop:
             )
 
             # ──────────────────
-            # DELTA (DETERMINISTIC, BUFFER-LEVEL)
+            # DELTA (BUFFER-LEVEL)
             # ──────────────────
             delta = compute_delta(
                 pre_buffer=pre.buffer,
