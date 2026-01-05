@@ -1,9 +1,10 @@
 from dataclasses import dataclass
 
 from core.mode_gate import Mode
+from core.poison import Poison
 from core.state_snapshot import StateSnapshot
 from execution.action_contract import ActionContract
-from execution.backend_contract import BackendBase, Result
+from execution.backend_contract import Result
 
 
 def _precondition(snapshot: StateSnapshot) -> bool:
@@ -32,11 +33,18 @@ MOVE_MOUSE_1PX_CONTRACT = ActionContract(
 
 @dataclass(frozen=True)
 class MoveMouse1px:
+    """
+    Declarative action.
+
+    Enforced invariants:
+    - No OS effects
+    - No backend method invocation
+    - No executor token access
+    - Pure intent derivation only
+    """
+
     contract = MOVE_MOUSE_1PX_CONTRACT
 
-    def _execute(self, backend: BackendBase) -> Result:
-        snap = StateSnapshot.from_backend(backend)
-        x, y = snap.cursor
-
-        # OS effect strictly delegated to executor-owned backend
-        return backend.move_mouse(x + 1, y)
+    def _execute(self, backend) -> Result:
+        # backend must never be used directly by actions
+        Poison.trigger("action attempted direct backend access")
