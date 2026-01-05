@@ -13,10 +13,10 @@ class LinuxBackend(BackendBase):
     """
     Linux X11 live backend (GII body).
 
-    Mechanical invariants:
+    Enforced invariants:
     - Zero OS interaction at import time
     - Zero OS interaction in __init__
-    - Executor token bound exactly once
+    - Executor token required and bound exactly once
     - All OS effects occur only inside _impl_* methods
     - Every OS effect gated by:
         - executor token (BackendBase)
@@ -35,22 +35,25 @@ class LinuxBackend(BackendBase):
         super().__init__()
         self._bind_executor(token)
 
+        # capability-empty until executor-authorized use
         self._np = None
         self._mss = None
         self._subprocess = None
 
     # ─────────────────────────────────────────────
-    # Lazy OS bindings (executor-authorized only)
+    # Lazy OS bindings (executor-only)
     # ─────────────────────────────────────────────
 
     def _ensure_libs(self) -> None:
+        Poison.assert_clean()
+
         if self._np is not None:
             return
 
         try:
-            import numpy as np
-            from mss import mss
-            import subprocess
+            import numpy as np  # type: ignore
+            from mss import mss  # type: ignore
+            import subprocess  # type: ignore
         except BaseException as e:
             Poison.trigger(f"backend dependency import failed: {repr(e)}")
 
@@ -59,11 +62,12 @@ class LinuxBackend(BackendBase):
         self._subprocess = subprocess
 
     # ─────────────────────────────────────────────
-    # Low-level OS primitives
+    # Low-level OS primitives (private)
     # ─────────────────────────────────────────────
 
     def _primary_monitor(self):
         self._ensure_libs()
+
         with self._mss() as sct:
             monitors = sct.monitors
             if not isinstance(monitors, list) or len(monitors) < 2:
